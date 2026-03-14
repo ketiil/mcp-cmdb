@@ -7,11 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from servicenow_cmdb_mcp.tools.ire import (
-    _validate_sys_id,
-    _validate_table_name,
-    register_ire_tools,
-)
+from servicenow_cmdb_mcp.tools._utils import _validate_sys_id, _validate_table_name
+from servicenow_cmdb_mcp.tools.ire import register_ire_tools
 
 
 # ── Fake sys_ids ────────────────────────────────────────────────────

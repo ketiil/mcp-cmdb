@@ -58,7 +58,7 @@ def register_prompts(mcp: FastMCP) -> None:
             f"1. Call `search_cis` with name_filter='{ci_identifier}' to find the CI. "
             "If that returns no results, try `get_ci_details` with sys_id='{ci_identifier}' instead.\n"
             "2. Once you have the CI's sys_id and table, call `get_ci_details` to get its full record.\n"
-            f"3. Call `get_dependency_tree` with the sys_id, direction='upstream', depth={depth} "
+            f"3. Call `get_dependency_tree` with the sys_id, direction='downstream', depth={depth} "
             "to find everything that depends on this CI.\n"
             "4. Call `get_ci_relationships` with the sys_id, direction='both' to see all direct relationships.\n\n"
             "After gathering all results, produce an impact assessment that includes:\n"

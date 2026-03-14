@@ -9,12 +9,8 @@ import pytest
 
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.errors import NotFoundError, SNPermissionError
-from servicenow_cmdb_mcp.tools.relationships import (
-    _clamp_limit,
-    _clamp_offset,
-    _validate_sys_id,
-    register_relationship_tools,
-)
+from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset, _validate_sys_id
+from servicenow_cmdb_mcp.tools.relationships import register_relationship_tools
 
 # ── Fake sys_ids used across tests ──────────────────────────────────
 

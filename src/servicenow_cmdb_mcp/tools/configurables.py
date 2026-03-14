@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -12,31 +11,14 @@ from mcp.server.fastmcp import FastMCP
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.redaction import redact_credentials
+from servicenow_cmdb_mcp.tools._utils import (
+    _clamp_limit,
+    _clamp_offset,
+    _json,
+    _validate_table_name,
+)
 
 logger = logging.getLogger(__name__)
-
-_MAX_LIMIT = 1000
-
-
-def _clamp_limit(limit: int) -> int:
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-def _clamp_offset(offset: int) -> int:
-    return max(0, offset)
-
-
-def _validate_table_name(table: str) -> str | None:
-    """Validate table name contains only safe characters."""
-    if not table or not table.strip():
-        return "table must not be empty."
-    if not all(c.isalnum() or c == "_" for c in table):
-        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
-    return None
-
-
-def _json(result: Any) -> str:
-    return json.dumps(result, indent=2, default=str)
 
 
 def _redact_script_fields(record: dict[str, Any], script_fields: list[str]) -> dict[str, Any]:

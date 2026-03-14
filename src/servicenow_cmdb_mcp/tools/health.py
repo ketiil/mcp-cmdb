@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 from typing import Any
 
@@ -10,10 +10,15 @@ from mcp.server.fastmcp import FastMCP
 
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import ServiceNowError
+from servicenow_cmdb_mcp.tools._utils import (
+    _MAX_LIMIT,
+    _clamp_limit,
+    _clamp_offset,
+    _json,
+    _validate_cmdb_table,
+)
 
 logger = logging.getLogger(__name__)
-
-_MAX_LIMIT = 1000
 
 # Default fields for health-related CI listings
 _HEALTH_CI_FIELDS = [
@@ -24,29 +29,6 @@ _HEALTH_CI_FIELDS = [
     "sys_updated_on",
     "discovery_source",
 ]
-
-
-def _clamp_limit(limit: int) -> int:
-    """Clamp limit to valid range [1, 1000]."""
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-def _clamp_offset(offset: int) -> int:
-    """Clamp offset to non-negative."""
-    return max(0, offset)
-
-
-def _validate_table_name(table: str) -> str | None:
-    """Validate table name is safe for URL interpolation. Returns error or None."""
-    if not table or not table.strip():
-        return "table must not be empty."
-    if not all(c.isalnum() or c == "_" for c in table):
-        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
-    return None
-
-
-def _json(result: Any) -> str:
-    return json.dumps(result, indent=2, default=str)
 
 
 def _extract_count(agg_result: dict[str, Any]) -> int:
@@ -121,7 +103,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "total_scanned" (CIs checked), and "next_scan_offset" (for continuation).
         """
         logger.info("find_orphan_cis: class=%s", ci_class)
-        if err := _validate_table_name(ci_class):
+        if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -187,13 +169,18 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 if sys_id and sys_id not in has_relationships:
                     orphans.append(record)
 
+            # There may be more if we fetched a full batch OR if we stopped
+            # early because the orphan limit was reached with unscanned records remaining
+            has_unscanned = scanned < len(records)
+            fetched_full_batch = len(records) == fetch_limit
+
             return _json({
                 "ci_class": ci_class,
                 "count": len(orphans),
                 "orphan_cis": orphans,
                 "total_scanned": scanned,
                 "next_scan_offset": scan_offset + scanned,
-                "may_have_more": scanned == fetch_limit and len(orphans) < limit,
+                "may_have_more": has_unscanned or fetched_full_batch,
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -232,7 +219,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             and "duplicate_groups" (list of groups, each with the shared value and matching CIs).
         """
         logger.info("find_duplicate_cis: class=%s field=%s", ci_class, match_field)
-        if err := _validate_table_name(ci_class):
+        if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -355,7 +342,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             ordered by sys_updated_on ascending (most stale first).
         """
         logger.info("find_stale_cis: class=%s days=%d", ci_class, days)
-        if err := _validate_table_name(ci_class):
+        if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -430,7 +417,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "stale_count", "missing_name_count", and "by_discovery_source".
         """
         logger.info("cmdb_health_summary: class=%s stale_days=%d", ci_class, stale_days)
-        if err := _validate_table_name(ci_class):
+        if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -440,47 +427,33 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         stale_days = max(1, min(stale_days, 3650))
 
         try:
-            # Total count
-            total_agg = await client.get_aggregate(table=ci_class)
-            total_count = _extract_count(total_agg)
-
-            # By operational status
-            status_agg = await client.get_aggregate(
-                table=ci_class,
-                group_by="operational_status",
-            )
-            by_status = _parse_agg_groups(status_agg, empty_label="unknown")
-
-            # Stale count
             stale_query = f"sys_updated_on<javascript:gs.daysAgo({stale_days})"
-            stale_agg = await client.get_aggregate(
-                table=ci_class,
-                query=stale_query,
-            )
-            stale_count = _extract_count(stale_agg)
 
-            # Missing name
-            missing_name_agg = await client.get_aggregate(
-                table=ci_class,
-                query="nameISEMPTY",
-            )
-            missing_name_count = _extract_count(missing_name_agg)
+            async def _safe_agg(**kwargs: str) -> dict:
+                try:
+                    return await client.get_aggregate(table=ci_class, **kwargs)
+                except ServiceNowError:
+                    return {}
 
-            # By discovery source
-            source_agg = await client.get_aggregate(
-                table=ci_class,
-                group_by="discovery_source",
+            # Run all 5 independent aggregate calls in parallel
+            total_agg, status_agg, stale_agg, missing_name_agg, source_agg = (
+                await asyncio.gather(
+                    _safe_agg(),
+                    _safe_agg(group_by="operational_status"),
+                    _safe_agg(query=stale_query),
+                    _safe_agg(query="nameISEMPTY"),
+                    _safe_agg(group_by="discovery_source"),
+                )
             )
-            by_source = _parse_agg_groups(source_agg, empty_label="(empty)")
 
             return _json({
                 "ci_class": ci_class,
-                "total_count": total_count,
-                "by_operational_status": by_status,
-                "stale_count": stale_count,
+                "total_count": _extract_count(total_agg),
+                "by_operational_status": _parse_agg_groups(status_agg, empty_label="unknown"),
+                "stale_count": _extract_count(stale_agg),
                 "stale_days": stale_days,
-                "missing_name_count": missing_name_count,
-                "by_discovery_source": by_source,
+                "missing_name_count": _extract_count(missing_name_agg),
+                "by_discovery_source": _parse_agg_groups(source_agg, empty_label="(empty)"),
             })
         except ServiceNowError as e:
             return e.to_json()

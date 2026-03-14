@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from servicenow_cmdb_mcp.errors import NotFoundError, SNPermissionError
+from servicenow_cmdb_mcp.tools._utils import _validate_table_name
 from servicenow_cmdb_mcp.tools.mutations import (
     _BLOCKED_FIELDS,
     _MAX_FIELD_VALUE_LENGTH,
     _validate_fields,
-    _validate_table_name,
     register_mutation_tools,
 )
 

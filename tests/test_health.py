@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from servicenow_cmdb_mcp.errors import SNPermissionError
+from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset
 from servicenow_cmdb_mcp.tools.health import (
-    _clamp_limit,
-    _clamp_offset,
     _extract_count,
     _parse_agg_groups,
     register_health_tools,
@@ -461,10 +460,13 @@ class TestCmdbHealthSummary:
         assert "gs.daysAgo(60)" in stale_call.kwargs["query"]
 
     @pytest.mark.asyncio
-    async def test_service_now_error(self, mock_client, tools):
+    async def test_service_now_error_degrades_gracefully(self, mock_client, tools):
         mock_client.get_aggregate.side_effect = SNPermissionError("Denied")
         result = _parse(await tools["cmdb_health_summary"]())
-        assert result["error"] is True
+        # With parallelized _safe_agg, errors are swallowed and counts default to 0
+        assert result["total_count"] == 0
+        assert result["stale_count"] == 0
+        assert result["missing_name_count"] == 0
 
     @pytest.mark.asyncio
     async def test_makes_five_aggregate_calls(self, mock_client, tools):

@@ -13,6 +13,7 @@ import httpx
 from servicenow_cmdb_mcp.config import Settings
 from servicenow_cmdb_mcp.errors import (
     AuthError,
+    InstanceError,
     SNTimeoutError,
     error_from_status,
 )
@@ -21,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_retry_after(value: str | None) -> int:
-    """Parse a Retry-After header value to seconds.
+    """Parse a Retry-After header value to integer seconds.
 
-    Handles both integer seconds and HTTP-date formats. Returns 0 on
+    Only handles integer values. HTTP-date values are not parsed and
+    return 0, falling back to the backoff calculation. Returns 0 on
     missing or unparseable values rather than crashing.
     """
     if not value:
@@ -198,6 +200,10 @@ class ServiceNowClient:
                 )
             except httpx.TimeoutException:
                 raise SNTimeoutError(f"Request to {path} timed out after {self._settings.request_timeout}s")
+            except httpx.ConnectError as exc:
+                raise InstanceError(f"Connection to {self._base_url} failed: {exc}") from exc
+            except httpx.NetworkError as exc:
+                raise InstanceError(f"Network error on {path}: {exc}") from exc
 
             # Success
             if response.status_code in (200, 201, 204):

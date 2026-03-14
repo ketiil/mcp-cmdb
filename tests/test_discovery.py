@@ -7,12 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from servicenow_cmdb_mcp.tools.discovery import (
-    _clamp_limit,
-    _clamp_offset,
-    _validate_table_name,
-    register_discovery_tools,
-)
+from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset, _validate_table_name
+from servicenow_cmdb_mcp.tools.discovery import register_discovery_tools
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

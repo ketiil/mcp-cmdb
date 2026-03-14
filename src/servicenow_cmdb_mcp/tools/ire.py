@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -11,40 +10,16 @@ from mcp.server.fastmcp import FastMCP
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
+from servicenow_cmdb_mcp.tools._utils import (
+    _clamp_limit,
+    _clamp_offset,
+    _json,
+    _validate_cmdb_table,
+    _validate_sys_id,
+    _validate_table_name,
+)
 
 logger = logging.getLogger(__name__)
-
-_MAX_LIMIT = 1000
-
-
-def _clamp_limit(limit: int) -> int:
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-def _clamp_offset(offset: int) -> int:
-    return max(0, offset)
-
-
-def _validate_table_name(table: str) -> str | None:
-    """Validate table name contains only safe characters."""
-    if not table or not table.strip():
-        return "table must not be empty."
-    if not all(c.isalnum() or c == "_" for c in table):
-        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
-    return None
-
-
-def _validate_sys_id(sys_id: str) -> str | None:
-    """Validate sys_id format — must be non-empty alphanumeric."""
-    if not sys_id or not sys_id.strip():
-        return "sys_id must not be empty."
-    if not all(c.isalnum() for c in sys_id):
-        return f"Invalid sys_id format: '{sys_id}'. Must contain only alphanumeric characters."
-    return None
-
-
-def _json(result: Any) -> str:
-    return json.dumps(result, indent=2, default=str)
 
 
 def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
@@ -273,10 +248,10 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        if err := _validate_table_name(table):
+        if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
+                "message": err, "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
                 "retry": False,
             })
 

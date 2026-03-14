@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 import time
@@ -12,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
+from servicenow_cmdb_mcp.tools._utils import _json, _validate_cmdb_table
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +36,9 @@ _MAX_PENDING = 50
 _MAX_FIELD_VALUE_LENGTH = 10_000
 
 
-def _json(result: Any) -> str:
-    return json.dumps(result, indent=2, default=str)
-
-
 def _generate_token() -> str:
     """Generate a short random confirmation token."""
     return secrets.token_hex(8)
-
-
-def _validate_table_name(table: str) -> str | None:
-    """Validate table name is safe for URL interpolation. Returns error or None."""
-    if not table or not table.strip():
-        return "table must not be empty."
-    # Table names are alphanumeric + underscores only
-    if not all(c.isalnum() or c == "_" for c in table):
-        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
-    return None
 
 
 def _validate_fields(fields: dict[str, str]) -> str | None:
@@ -154,7 +140,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        if err := _validate_table_name(table):
+        if err := _validate_cmdb_table(table):
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -350,7 +336,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         logger.info("preview_ci_create: table=%s", table)
         _cleanup_expired()
 
-        if err := _validate_table_name(table):
+        if err := _validate_cmdb_table(table):
             return _json({
                 "error": True,
                 "category": "ValidationError",

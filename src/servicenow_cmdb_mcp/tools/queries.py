@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -11,29 +10,16 @@ from mcp.server.fastmcp import FastMCP
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
+from servicenow_cmdb_mcp.tools._utils import (
+    _clamp_limit,
+    _clamp_offset,
+    _json,
+    _validate_cmdb_table,
+    _validate_sys_id,
+    _validate_table_name,
+)
 
 logger = logging.getLogger(__name__)
-
-_MAX_LIMIT = 1000
-
-
-def _clamp_limit(limit: int) -> int:
-    """Clamp limit to valid range [1, 1000]."""
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-def _clamp_offset(offset: int) -> int:
-    """Clamp offset to non-negative."""
-    return max(0, offset)
-
-
-def _validate_table_name(table: str) -> str | None:
-    """Validate table name is safe for URL interpolation. Returns error or None."""
-    if not table or not table.strip():
-        return "table must not be empty."
-    if not all(c.isalnum() or c == "_" for c in table):
-        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
-    return None
 
 
 # Default fields returned for CI list queries
@@ -46,11 +32,6 @@ _CI_LIST_FIELDS = [
     "location",
     "sys_updated_on",
 ]
-
-
-def _json(result: Any) -> str:
-    """Serialize a result to JSON for tool responses."""
-    return json.dumps(result, indent=2, default=str)
 
 
 def _build_query_parts(parts: list[str]) -> str:
@@ -229,7 +210,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("search_cis: class=%s name=%s", ci_class, name_filter)
-        if err := _validate_table_name(ci_class):
+        if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -299,7 +280,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("query_cis_raw: table=%s query=%s", table, encoded_query)
-        if err := _validate_table_name(table):
+        if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -354,6 +335,20 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with the CI record, or an error if not found.
         """
         logger.info("get_ci_details: sys_id=%s table=%s", sys_id, table)
+        if err := _validate_cmdb_table(table):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
+        if err := _validate_sys_id(sys_id):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CI sys_id.",
+                "retry": False,
+            })
         default_fields = [
             "sys_id",
             "name",
@@ -426,7 +421,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             counts broken down by each distinct value of that field.
         """
         logger.info("count_cis: table=%s query=%s group_by=%s", table, encoded_query, group_by)
-        if err := _validate_table_name(table):
+        if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
                 "message": err,
@@ -530,12 +525,10 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             (list of relationship types suggested for this class).
         """
         logger.info("describe_ci_class: class=%s", class_name)
-        cache_key = f"ci_class_desc:{class_name}"
-        was_cached = cache.get(cache_key) is not None
 
         try:
             result = await fetch_class_description(client, cache, class_name)
-            return _json({**result, "cached": was_cached})
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 

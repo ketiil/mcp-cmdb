@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -11,6 +10,12 @@ from mcp.server.fastmcp import FastMCP
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import ServiceNowError
+from servicenow_cmdb_mcp.tools._utils import (
+    _clamp_limit,
+    _clamp_offset,
+    _json,
+    _validate_sys_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,35 +25,8 @@ _CI_REF_FIELDS = ["sys_id", "name", "sys_class_name", "operational_status"]
 # Fields for relationship records
 _REL_FIELDS = ["sys_id", "parent", "child", "type"]
 
-
-_MAX_LIMIT = 1000
-
 # Maximum nodes to visit in BFS/DFS traversals to prevent unbounded memory
 _MAX_TRAVERSAL_NODES = 500
-
-
-def _clamp_limit(limit: int) -> int:
-    """Clamp limit to valid range [1, 1000]."""
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-def _clamp_offset(offset: int) -> int:
-    """Clamp offset to non-negative."""
-    return max(0, offset)
-
-
-def _validate_sys_id(sys_id: str) -> str | None:
-    """Return a validation error message if sys_id is invalid, else None."""
-    if not sys_id or not sys_id.strip():
-        return "sys_id must not be empty."
-    # sys_ids are 32-char hex strings; reject anything with path traversal chars
-    if not all(c.isalnum() for c in sys_id):
-        return f"Invalid sys_id format: '{sys_id}'. Must contain only alphanumeric characters."
-    return None
-
-
-def _json(result: Any) -> str:
-    return json.dumps(result, indent=2, default=str)
 
 
 async def _resolve_ci(client: ServiceNowClient, sys_id: str) -> dict[str, str]:

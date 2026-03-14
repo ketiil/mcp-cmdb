@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
-from servicenow_cmdb_mcp.tools.imports import _validate_table_name
+from servicenow_cmdb_mcp.tools._utils import _validate_table_name
 from servicenow_cmdb_mcp.tools.queries import fetch_class_description
 
 logger = logging.getLogger(__name__)
@@ -30,74 +30,70 @@ async def _fetch_all_classes(
     Fetches sys_id to build a local lookup, then resolves super_class
     references to actual class names (not display labels).
 
+    Uses cache.get_or_fetch for stampede protection — concurrent callers
+    coalesce into a single API call.
+
     Returns dict with "classes" list and "truncated" flag.
     """
-    cache_key = "resource:classes"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
 
-    response = await client.get(
-        "/api/now/table/sys_db_object",
-        params={
-            "sysparm_query": "nameSTARTSWITHcmdb_ci^ORDERBYname",
-            "sysparm_fields": "sys_id,name,label,super_class",
-            "sysparm_limit": "1000",
-        },
-    )
-    records = response.get("result", [])
+    async def _do_fetch() -> dict[str, Any]:
+        response = await client.get(
+            "/api/now/table/sys_db_object",
+            params={
+                "sysparm_query": "nameSTARTSWITHcmdb_ci^ORDERBYname",
+                "sysparm_fields": "sys_id,name,label,super_class",
+                "sysparm_limit": "1000",
+            },
+        )
+        records = response.get("result", [])
 
-    # Build sys_id → class name lookup for resolving parent references
-    id_to_name: dict[str, str] = {}
-    for r in records:
-        sid = r.get("sys_id", "")
-        name = r.get("name", "")
-        if sid and name:
-            id_to_name[sid] = name
+        # Build sys_id → class name lookup for resolving parent references
+        id_to_name: dict[str, str] = {}
+        for r in records:
+            sid = r.get("sys_id", "")
+            name = r.get("name", "")
+            if sid and name:
+                id_to_name[sid] = name
 
-    classes = []
-    for r in records:
-        parent_ref = r.get("super_class", "")
-        # super_class may be a plain sys_id or {"link": ..., "value": sys_id}
-        parent_id = parent_ref.get("value", "") if isinstance(parent_ref, dict) else str(parent_ref)
-        parent_name = id_to_name.get(parent_id, parent_id)
-        classes.append({
-            "name": r.get("name", ""),
-            "label": r.get("label", ""),
-            "parent": parent_name,
-        })
+        classes = []
+        for r in records:
+            parent_ref = r.get("super_class", "")
+            parent_id = parent_ref.get("value", "") if isinstance(parent_ref, dict) else str(parent_ref)
+            parent_name = id_to_name.get(parent_id, parent_id)
+            classes.append({
+                "name": r.get("name", ""),
+                "label": r.get("label", ""),
+                "parent": parent_name,
+            })
 
-    result: dict[str, Any] = {"classes": classes, "truncated": len(records) >= 1000}
-    cache.set(cache_key, result)
-    return result
+        return {"classes": classes, "truncated": len(records) >= 1000}
+
+    return await cache.get_or_fetch("resource:classes", _do_fetch)
 
 
 async def _fetch_relationship_types(
     client: ServiceNowClient, cache: MetadataCache
 ) -> list[dict[str, str]]:
     """Fetch all relationship types. Shares cache key with list_relationship_types tool."""
-    cache_key = "rel_types:all"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
 
-    records = await client.get_records(
-        table="cmdb_rel_type",
-        fields=["sys_id", "name", "parent_descriptor", "child_descriptor"],
-        limit=200,
-        order_by="ORDERBYname",
-    )
-    types = [
-        {
-            "sys_id": r.get("sys_id", ""),
-            "name": r.get("name", ""),
-            "parent_descriptor": r.get("parent_descriptor", ""),
-            "child_descriptor": r.get("child_descriptor", ""),
-        }
-        for r in records
-    ]
-    cache.set(cache_key, types)
-    return types
+    async def _do_fetch() -> list[dict[str, str]]:
+        records = await client.get_records(
+            table="cmdb_rel_type",
+            fields=["sys_id", "name", "parent_descriptor", "child_descriptor"],
+            limit=200,
+            order_by="ORDERBYname",
+        )
+        return [
+            {
+                "sys_id": r.get("sys_id", ""),
+                "name": r.get("name", ""),
+                "parent_descriptor": r.get("parent_descriptor", ""),
+                "child_descriptor": r.get("child_descriptor", ""),
+            }
+            for r in records
+        ]
+
+    return await cache.get_or_fetch("rel_types:all", _do_fetch)
 
 
 async def _safe_get_records(
@@ -126,11 +122,17 @@ async def _fetch_instance_metadata(
     client: ServiceNowClient, cache: MetadataCache
 ) -> dict[str, Any]:
     """Fetch instance version, CMDB plugins, and CI count."""
-    cache_key = "resource:instance_metadata"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
 
+    async def _do_fetch() -> dict[str, Any]:
+        return await _do_fetch_instance_metadata(client)
+
+    return await cache.get_or_fetch("resource:instance_metadata", _do_fetch)
+
+
+async def _do_fetch_instance_metadata(
+    client: ServiceNowClient,
+) -> dict[str, Any]:
+    """Inner fetch for instance metadata — called under cache lock."""
     (props, props_err), (plugins, plugins_err), (agg, agg_err) = await asyncio.gather(
         _safe_get_records(
             client,
@@ -200,7 +202,6 @@ async def _fetch_instance_metadata(
     if errors:
         result["errors"] = errors
 
-    cache.set(cache_key, result)
     return result
 
 
