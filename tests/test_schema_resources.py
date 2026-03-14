@@ -68,25 +68,30 @@ def tools_and_resources(mock_client, cache):
 class TestFetchAllClasses:
     @pytest.mark.asyncio
     async def test_returns_classes(self, mock_client, cache):
+        parent_id = "p" * 32
         mock_client.get.return_value = {
             "result": [
-                {"name": "cmdb_ci_server", "label": "Server", "super_class": "cmdb_ci"},
-                {"name": "cmdb_ci_vm", "label": "Virtual Machine", "super_class": "cmdb_ci"},
+                {"sys_id": parent_id, "name": "cmdb_ci", "label": "CI", "super_class": ""},
+                {"sys_id": "a" * 32, "name": "cmdb_ci_server", "label": "Server",
+                 "super_class": {"link": "", "value": parent_id}},
+                {"sys_id": "b" * 32, "name": "cmdb_ci_vm", "label": "Virtual Machine",
+                 "super_class": {"link": "", "value": parent_id}},
             ]
         }
         data = await _fetch_all_classes(mock_client, cache)
-        assert len(data["classes"]) == 2
-        assert data["classes"][0]["name"] == "cmdb_ci_server"
-        assert data["classes"][0]["parent"] == "cmdb_ci"
+        assert len(data["classes"]) == 3
+        assert data["classes"][1]["name"] == "cmdb_ci_server"
+        assert data["classes"][1]["parent"] == "cmdb_ci"  # Resolved from sys_id
         assert data["truncated"] is False
 
     @pytest.mark.asyncio
-    async def test_uses_display_value_param(self, mock_client, cache):
+    async def test_fetches_sys_id_for_parent_resolution(self, mock_client, cache):
         mock_client.get.return_value = {"result": []}
         await _fetch_all_classes(mock_client, cache)
         call_args = mock_client.get.call_args
         assert call_args.args[0] == "/api/now/table/sys_db_object"
-        assert call_args.kwargs["params"]["sysparm_display_value"] == "true"
+        # Should fetch sys_id to build parent name lookup
+        assert "sys_id" in call_args.kwargs["params"]["sysparm_fields"]
 
     @pytest.mark.asyncio
     async def test_caches_result(self, mock_client, cache):

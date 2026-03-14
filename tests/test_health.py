@@ -144,18 +144,41 @@ class TestClampHelpers:
 # ── find_orphan_cis ─────────────────────────────────────────────────
 
 class TestFindOrphanCis:
+    def _mock_get_records(self, ci_records, linked_ids=None):
+        """Build a mock for get_records that handles both CI fetch and batch rel check.
+
+        Args:
+            ci_records: Records to return for the initial CI fetch.
+            linked_ids: Set of sys_ids that have relationships.
+        """
+        linked = linked_ids or set()
+        call_count = {"n": 0}
+
+        async def mock_fn(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                # Batch IN queries for parent/child relationship checks
+                if "parentIN" in query:
+                    return [{"parent": sid} for sid in linked if sid in query]
+                if "childIN" in query:
+                    return [{"child": sid} for sid in linked if sid in query]
+                return []
+            # First call: CI fetch
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ci_records
+            return []
+
+        return mock_fn
+
     @pytest.mark.asyncio
     async def test_finds_orphans(self, mock_client, tools):
         """CIs with 0 relationships should be returned as orphans."""
-        mock_client.get_records.return_value = [
-            _ci_record(CI_A, "Orphan-A"),
-            _ci_record(CI_B, "Linked-B"),
-        ]
-        # CI_A has 0 rels, CI_B has 2 rels
-        mock_client.get_aggregate.side_effect = [
-            _agg_response(0),  # CI_A
-            _agg_response(2),  # CI_B
-        ]
+        mock_client.get_records.side_effect = self._mock_get_records(
+            ci_records=[_ci_record(CI_A, "Orphan-A"), _ci_record(CI_B, "Linked-B")],
+            linked_ids={CI_B},
+        )
 
         result = _parse(await tools["find_orphan_cis"]())
         assert result["count"] == 1
@@ -164,8 +187,10 @@ class TestFindOrphanCis:
     @pytest.mark.asyncio
     async def test_no_orphans(self, mock_client, tools):
         """All CIs have relationships — should return empty list."""
-        mock_client.get_records.return_value = [_ci_record(CI_A, "Linked")]
-        mock_client.get_aggregate.return_value = _agg_response(3)
+        mock_client.get_records.side_effect = self._mock_get_records(
+            ci_records=[_ci_record(CI_A, "Linked")],
+            linked_ids={CI_A},
+        )
 
         result = _parse(await tools["find_orphan_cis"]())
         assert result["count"] == 0
@@ -174,38 +199,39 @@ class TestFindOrphanCis:
     @pytest.mark.asyncio
     async def test_respects_limit(self, mock_client, tools):
         """Should stop after collecting `limit` orphans."""
-        mock_client.get_records.return_value = [
-            _ci_record(f"{'a' * 31}{i}", f"Orphan-{i}") for i in range(10)
-        ]
-        mock_client.get_aggregate.return_value = _agg_response(0)  # All orphans
+        cis = [_ci_record(f"{'a' * 31}{i}", f"Orphan-{i}") for i in range(10)]
+        mock_client.get_records.side_effect = self._mock_get_records(
+            ci_records=cis,
+            linked_ids=set(),  # All are orphans
+        )
 
         result = _parse(await tools["find_orphan_cis"](limit=3))
         assert result["count"] == 3
 
     @pytest.mark.asyncio
     async def test_filters_by_class(self, mock_client, tools):
-        mock_client.get_records.return_value = []
+        mock_client.get_records.side_effect = self._mock_get_records(ci_records=[])
         await tools["find_orphan_cis"](ci_class="cmdb_ci_server")
 
-        call_args = mock_client.get_records.call_args
-        assert call_args.kwargs["table"] == "cmdb_ci_server"
+        # First call should be the CI fetch with the correct table
+        first_call = mock_client.get_records.call_args_list[0]
+        assert first_call.kwargs["table"] == "cmdb_ci_server"
 
     @pytest.mark.asyncio
     async def test_filters_by_operational_status(self, mock_client, tools):
-        mock_client.get_records.return_value = []
+        mock_client.get_records.side_effect = self._mock_get_records(ci_records=[])
         await tools["find_orphan_cis"](operational_status="1")
 
-        call_args = mock_client.get_records.call_args
-        assert "operational_status=1" in call_args.kwargs["query"]
+        first_call = mock_client.get_records.call_args_list[0]
+        assert "operational_status=1" in first_call.kwargs["query"]
 
     @pytest.mark.asyncio
     async def test_skips_empty_sys_id(self, mock_client, tools):
-        """Records with empty sys_id should be skipped."""
-        mock_client.get_records.return_value = [
-            {"sys_id": "", "name": "Bad"},
-            _ci_record(CI_A, "Good"),
-        ]
-        mock_client.get_aggregate.return_value = _agg_response(0)
+        """Records with empty sys_id should be skipped from orphan results."""
+        mock_client.get_records.side_effect = self._mock_get_records(
+            ci_records=[{"sys_id": "", "name": "Bad"}, _ci_record(CI_A, "Good")],
+            linked_ids=set(),
+        )
 
         result = _parse(await tools["find_orphan_cis"]())
         assert result["count"] == 1
@@ -214,14 +240,10 @@ class TestFindOrphanCis:
     @pytest.mark.asyncio
     async def test_returns_scan_metadata(self, mock_client, tools):
         """Response should include scanning progress info."""
-        mock_client.get_records.return_value = [
-            _ci_record(CI_A, "Orphan-A"),
-            _ci_record(CI_B, "Linked-B"),
-        ]
-        mock_client.get_aggregate.side_effect = [
-            _agg_response(0),  # CI_A orphan
-            _agg_response(1),  # CI_B linked
-        ]
+        mock_client.get_records.side_effect = self._mock_get_records(
+            ci_records=[_ci_record(CI_A, "Orphan-A"), _ci_record(CI_B, "Linked-B")],
+            linked_ids={CI_B},
+        )
 
         result = _parse(await tools["find_orphan_cis"]())
         assert result["total_scanned"] == 2
@@ -231,11 +253,11 @@ class TestFindOrphanCis:
     @pytest.mark.asyncio
     async def test_scan_offset_continues(self, mock_client, tools):
         """scan_offset should be passed to the CI fetch."""
-        mock_client.get_records.return_value = []
+        mock_client.get_records.side_effect = self._mock_get_records(ci_records=[])
         await tools["find_orphan_cis"](scan_offset=100)
 
-        call_args = mock_client.get_records.call_args
-        assert call_args.kwargs["offset"] == 100
+        first_call = mock_client.get_records.call_args_list[0]
+        assert first_call.kwargs["offset"] == 100
 
     @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):

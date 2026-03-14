@@ -65,6 +65,7 @@ class ServiceNowClient:
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._token_expires_at: float = 0.0
+        self._token_lock = asyncio.Lock()
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -87,11 +88,13 @@ class ServiceNowClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if response.status_code != 200:
-            raise AuthError(f"OAuth password grant failed: HTTP {response.status_code}")
+            raise AuthError("OAuth password grant failed. Check credentials and instance URL.")
 
         data = response.json()
         if "error" in data:
-            raise AuthError(f"OAuth error: {data.get('error_description', data['error'])}")
+            # Only expose the error code, not the full description which may echo credentials
+            error_code = data.get("error", "unknown_error")
+            raise AuthError(f"OAuth error: {error_code}. Verify client_id, client_secret, username, and password.")
 
         self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token")
@@ -138,13 +141,15 @@ class ServiceNowClient:
         """Return a valid access token, refreshing if needed.
 
         Refreshes 60 seconds before expiry to avoid mid-request expirations.
+        Uses a lock to prevent concurrent token refresh races.
         """
-        if self._access_token is None:
-            await self._password_grant()
-        elif time.monotonic() >= self._token_expires_at - 60:
-            await self._refresh_grant()
-        assert self._access_token is not None  # noqa: S101
-        return self._access_token
+        async with self._token_lock:
+            if self._access_token is None:
+                await self._password_grant()
+            elif time.monotonic() >= self._token_expires_at - 60:
+                await self._refresh_grant()
+            assert self._access_token is not None  # noqa: S101
+            return self._access_token
 
     def _invalidate_token(self) -> None:
         """Clear cached tokens to force re-authentication."""
@@ -236,15 +241,22 @@ class ServiceNowClient:
 
     @staticmethod
     def _extract_error_message(response: httpx.Response) -> str:
-        """Pull a human-readable message from a ServiceNow error response."""
+        """Pull a human-readable message from a ServiceNow error response.
+
+        Avoids leaking internal details by capping message length and
+        falling back to a generic message rather than dumping the full body.
+        """
         try:
             body = response.json()
             err = body.get("error", {})
             if isinstance(err, dict):
-                return err.get("message", "") or err.get("detail", "") or str(body)
-            return str(err)
+                msg = err.get("message", "") or err.get("detail", "")
+                if msg:
+                    return msg[:500]
+                return f"HTTP {response.status_code} error (no detail provided)"
+            return str(err)[:500]
         except Exception:
-            return f"HTTP {response.status_code}: {response.text[:200]}"
+            return f"HTTP {response.status_code} error"
 
     # ── Convenience methods ──────────────────────────────────────────────
 

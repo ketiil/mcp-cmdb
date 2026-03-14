@@ -123,11 +123,20 @@ class TestValidateSysId:
     def test_valid(self):
         assert _validate_sys_id("abc123") is None
 
+    def test_valid_32_hex(self):
+        assert _validate_sys_id("a" * 32) is None
+
     def test_empty(self):
         assert _validate_sys_id("") is not None
 
     def test_blank(self):
         assert _validate_sys_id("   ") is not None
+
+    def test_path_traversal(self):
+        assert _validate_sys_id("../../etc/passwd") is not None
+
+    def test_special_chars(self):
+        assert _validate_sys_id("abc-123") is not None
 
 
 # ── get_ci_relationships ────────────────────────────────────────────
@@ -148,8 +157,17 @@ class TestGetCiRelationships:
 
     @pytest.mark.asyncio
     async def test_upstream_queries_child_field(self, mock_client, tools):
-        mock_client.get_records.return_value = [_rel_record(parent=CI_B, child=CI_A)]
-        mock_client.get_record.return_value = _ci_record(CI_B, "Server-B")
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [_ci_record(CI_B, "Server-B")]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.return_value = _rel_type_record()
 
         result = _parse(await tools["get_ci_relationships"](CI_A, direction="upstream"))
 
@@ -157,24 +175,32 @@ class TestGetCiRelationships:
         assert result["relationships"][0]["direction"] == "upstream"
         assert result["relationships"][0]["related_ci"]["sys_id"] == CI_B
 
-        # Verify the query was for child=CI_A (upstream means CI is child)
-        call_args = mock_client.get_records.call_args
-        assert f"child={CI_A}" in call_args.kwargs["query"]
+        # Verify the first query was for child=CI_A (upstream means CI is child)
+        first_call = mock_client.get_records.call_args_list[0]
+        assert f"child={CI_A}" in first_call.kwargs["query"]
 
     @pytest.mark.asyncio
     async def test_downstream_queries_parent_field(self, mock_client, tools):
-        mock_client.get_records.return_value = [_rel_record(parent=CI_A, child=CI_B)]
-        mock_client.get_record.return_value = _ci_record(CI_B, "Server-B")
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                return [_rel_record(parent=CI_A, child=CI_B)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [_ci_record(CI_B, "Server-B")]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.return_value = _rel_type_record()
 
         result = _parse(await tools["get_ci_relationships"](CI_A, direction="downstream"))
 
         assert result["count"] == 1
         assert result["relationships"][0]["direction"] == "downstream"
-        # Downstream: related CI is the child
         assert result["relationships"][0]["related_ci"]["sys_id"] == CI_B
 
-        call_args = mock_client.get_records.call_args
-        assert f"parent={CI_A}" in call_args.kwargs["query"]
+        first_call = mock_client.get_records.call_args_list[0]
+        assert f"parent={CI_A}" in first_call.kwargs["query"]
 
     @pytest.mark.asyncio
     async def test_both_direction_splits_limit(self, mock_client, tools):
@@ -182,9 +208,11 @@ class TestGetCiRelationships:
 
         await tools["get_ci_relationships"](CI_A, direction="both", limit=20)
 
-        # Should make 2 calls, each with limit=10
-        assert mock_client.get_records.call_count == 2
-        for call in mock_client.get_records.call_args_list:
+        # Should make 2 rel queries (upstream + downstream), each with limit=10
+        rel_calls = [c for c in mock_client.get_records.call_args_list
+                     if c.kwargs.get("table") == "cmdb_rel_ci"]
+        assert len(rel_calls) == 2
+        for call in rel_calls:
             assert call.kwargs["limit"] == 10
 
     @pytest.mark.asyncio
@@ -236,18 +264,24 @@ class TestGetDependencyTree:
     @pytest.mark.asyncio
     async def test_single_level_tree(self, mock_client, tools):
         # Root CI_A has one upstream dependency CI_B
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
         def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if f"child={CI_A}" in query:
+            if table == "cmdb_rel_ci" and f"child={CI_A}" in query:
                 return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "Server-A") if kw["sys_id"] == CI_A
-            else _ci_record(CI_B, "Server-B") if kw["sys_id"] == CI_B
-            else _rel_type_record() if kw.get("table") == "cmdb_rel_type"
-            else None
+            ci_lookup.get(kw.get("sys_id"))
+            or (_rel_type_record() if kw.get("table") == "cmdb_rel_type" else None)
         )
 
         result = _parse(await tools["get_dependency_tree"](CI_A, max_depth=2))
@@ -260,30 +294,35 @@ class TestGetDependencyTree:
     async def test_cycle_detection(self, mock_client, tools):
         """A->B->A should not loop forever."""
         call_count = 0
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
 
         def mock_get_records(**kwargs):
             nonlocal call_count
             call_count += 1
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if kwargs.get("table") == "cmdb_rel_ci":
+            if table == "cmdb_rel_ci":
                 if f"child={CI_A}" in query:
                     return [_rel_record(parent=CI_B, child=CI_A)]
                 if f"child={CI_B}" in query:
                     return [_rel_record(parent=CI_A, child=CI_B)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "Server-A") if kw.get("sys_id") == CI_A
-            else _ci_record(CI_B, "Server-B") if kw.get("sys_id") == CI_B
-            else _rel_type_record()
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
         )
 
         result = _parse(await tools["get_dependency_tree"](CI_A, max_depth=5))
         # Should complete without infinite loop
         assert result["tree"]["ci"]["sys_id"] == CI_A
-        # B should appear once as child, but not recurse back to A
-        assert call_count < 10  # Sanity: not spinning
+        # Calls should be bounded
+        assert call_count < 20  # Sanity: not spinning
 
 
 # ── list_relationship_types ─────────────────────────────────────────
@@ -356,7 +395,7 @@ class TestFindRelatedCis:
 
     @pytest.mark.asyncio
     async def test_resolves_type_name(self, mock_client, tools):
-        # First call resolves the name, second fetches relationships
+        # First call resolves the name, then fetches relationships
         mock_client.get_records.side_effect = [
             [{"sys_id": REL_TYPE_ID, "name": "Runs on::Runs"}],  # name lookup
             [],  # upstream rel query
@@ -388,9 +427,9 @@ class TestFindRelatedCis:
 
         await tools["find_related_cis"](CI_A, rel_type=REL_TYPE_ID)
 
-        # Should NOT look up the type name — all calls should be to cmdb_rel_ci
+        # Should NOT look up the type name — cmdb_rel_type should not appear
         for call in mock_client.get_records.call_args_list:
-            assert call.kwargs["table"] == "cmdb_rel_ci"
+            assert call.kwargs["table"] != "cmdb_rel_type"
 
     @pytest.mark.asyncio
     async def test_filters_by_rel_type(self, mock_client, tools):
@@ -398,8 +437,10 @@ class TestFindRelatedCis:
 
         await tools["find_related_cis"](CI_A, rel_type=REL_TYPE_ID, direction="upstream")
 
-        call_args = mock_client.get_records.call_args
-        assert f"type={REL_TYPE_ID}" in call_args.kwargs["query"]
+        rel_calls = [c for c in mock_client.get_records.call_args_list
+                     if c.kwargs.get("table") == "cmdb_rel_ci"]
+        assert len(rel_calls) >= 1
+        assert f"type={REL_TYPE_ID}" in rel_calls[0].kwargs["query"]
 
 
 # ── get_impact_summary ──────────────────────────────────────────────
@@ -423,21 +464,27 @@ class TestGetImpactSummary:
 
     @pytest.mark.asyncio
     async def test_counts_impacted_by_class(self, mock_client, tools):
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "App-B", cls="cmdb_ci_appl"),
+            CI_C: _ci_record(CI_C, "Server-C", cls="cmdb_ci_server"),
+        }
+
         def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if f"parent={CI_A}" in query:
+            if table == "cmdb_rel_ci" and f"parent={CI_A}" in query:
                 return [
                     _rel_record(parent=CI_A, child=CI_B, sys_id="r1"),
                     _rel_record(parent=CI_A, child=CI_C, sys_id="r2"),
                 ]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "Server-A") if kw.get("sys_id") == CI_A
-            else _ci_record(CI_B, "App-B", cls="cmdb_ci_appl") if kw.get("sys_id") == CI_B
-            else _ci_record(CI_C, "Server-C", cls="cmdb_ci_server") if kw.get("sys_id") == CI_C
-            else _rel_type_record()
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
         )
 
         result = _parse(await tools["get_impact_summary"](CI_A))
@@ -447,17 +494,23 @@ class TestGetImpactSummary:
 
     @pytest.mark.asyncio
     async def test_identifies_impacted_services(self, mock_client, tools):
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "My Service", cls="cmdb_ci_service"),
+        }
+
         def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if f"parent={CI_A}" in query:
+            if table == "cmdb_rel_ci" and f"parent={CI_A}" in query:
                 return [_rel_record(parent=CI_A, child=CI_B)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "Server-A") if kw.get("sys_id") == CI_A
-            else _ci_record(CI_B, "My Service", cls="cmdb_ci_service") if kw.get("sys_id") == CI_B
-            else _rel_type_record()
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
         )
 
         result = _parse(await tools["get_impact_summary"](CI_A))
@@ -467,58 +520,63 @@ class TestGetImpactSummary:
     @pytest.mark.asyncio
     async def test_root_ci_excluded_from_impact(self, mock_client, tools):
         """Circular dep A->B->A should not list A as impacted by itself."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
         def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if f"parent={CI_A}" in query:
-                return [_rel_record(parent=CI_A, child=CI_B)]
-            if f"parent={CI_B}" in query:
-                return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_rel_ci":
+                if f"parent={CI_A}" in query:
+                    return [_rel_record(parent=CI_A, child=CI_B)]
+                if f"parent={CI_B}" in query:
+                    return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "Server-A") if kw.get("sys_id") == CI_A
-            else _ci_record(CI_B, "Server-B") if kw.get("sys_id") == CI_B
-            else _rel_type_record()
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
         )
 
         result = _parse(await tools["get_impact_summary"](CI_A))
-        impacted_ids = [ci["sys_id"] for ci in result["impacted_services"]]
-        all_ids = [ci["sys_id"] for ci in json.loads(
-            _parse.__wrapped__(result) if hasattr(_parse, '__wrapped__') else "[]"
-        )] if False else [ci["sys_id"] for ci in result.get("impacted_services", [])]
-        # Root CI should never appear in impacted list
-        for ci in result.get("impacted_by_class", {}):
-            pass  # just checking structure
-        total_impacted_ids = set()
         # Re-check: total_impacted should be 1 (only B), not 2
         assert result["total_impacted"] == 1
 
     @pytest.mark.asyncio
     async def test_no_duplicates_diamond(self, mock_client, tools):
         """Diamond: A->B, A->C, B->D, C->D — D should be counted once."""
+        d_id = "f" * 32
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "A"),
+            CI_B: _ci_record(CI_B, "B"),
+            CI_C: _ci_record(CI_C, "C"),
+            d_id: _ci_record(d_id, "D"),
+        }
+
         def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
             query = kwargs.get("query", "")
-            if f"parent={CI_A}" in query:
-                return [
-                    _rel_record(parent=CI_A, child=CI_B, sys_id="r1"),
-                    _rel_record(parent=CI_A, child=CI_C, sys_id="r2"),
-                ]
-            d_id = "f" * 32
-            if f"parent={CI_B}" in query:
-                return [_rel_record(parent=CI_B, child=d_id, sys_id="r3")]
-            if f"parent={CI_C}" in query:
-                return [_rel_record(parent=CI_C, child=d_id, sys_id="r4")]
+            if table == "cmdb_rel_ci":
+                if f"parent={CI_A}" in query:
+                    return [
+                        _rel_record(parent=CI_A, child=CI_B, sys_id="r1"),
+                        _rel_record(parent=CI_A, child=CI_C, sys_id="r2"),
+                    ]
+                if f"parent={CI_B}" in query:
+                    return [_rel_record(parent=CI_B, child=d_id, sys_id="r3")]
+                if f"parent={CI_C}" in query:
+                    return [_rel_record(parent=CI_C, child=d_id, sys_id="r4")]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
             return []
 
-        d_id = "f" * 32
         mock_client.get_records.side_effect = mock_get_records
         mock_client.get_record.side_effect = lambda **kw: (
-            _ci_record(CI_A, "A") if kw.get("sys_id") == CI_A
-            else _ci_record(CI_B, "B") if kw.get("sys_id") == CI_B
-            else _ci_record(CI_C, "C") if kw.get("sys_id") == CI_C
-            else _ci_record(d_id, "D") if kw.get("sys_id") == d_id
-            else _rel_type_record()
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
         )
 
         result = _parse(await tools["get_impact_summary"](CI_A, max_depth=3))

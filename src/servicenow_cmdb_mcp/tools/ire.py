@@ -35,9 +35,11 @@ def _validate_table_name(table: str) -> str | None:
 
 
 def _validate_sys_id(sys_id: str) -> str | None:
-    """Validate sys_id is non-empty."""
+    """Validate sys_id format — must be non-empty alphanumeric."""
     if not sys_id or not sys_id.strip():
         return "sys_id must not be empty."
+    if not all(c.isalnum() for c in sys_id):
+        return f"Invalid sys_id format: '{sys_id}'. Must contain only alphanumeric characters."
     return None
 
 
@@ -260,6 +262,14 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "error": True, "category": "ValidationError",
                 "message": f"sys_id_b: {err}",
                 "suggestion": "Provide the sys_id of the second CI.",
+                "retry": False,
+            })
+
+        if sys_id_a == sys_id_b:
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": "sys_id_a and sys_id_b are the same. Provide two different CIs to compare.",
+                "suggestion": "Use two distinct sys_ids.",
                 "retry": False,
             })
 

@@ -25,10 +25,10 @@ def _json(result: Any) -> str:
 async def _fetch_all_classes(
     client: ServiceNowClient, cache: MetadataCache
 ) -> dict[str, Any]:
-    """Fetch all CMDB classes as a flat list with resolved parent names.
+    """Fetch all CMDB classes as a flat list with resolved parent class names.
 
-    Uses sysparm_display_value=true so super_class returns the parent
-    class name instead of a sys_id reference.
+    Fetches sys_id to build a local lookup, then resolves super_class
+    references to actual class names (not display labels).
 
     Returns dict with "classes" list and "truncated" flag.
     """
@@ -41,20 +41,32 @@ async def _fetch_all_classes(
         "/api/now/table/sys_db_object",
         params={
             "sysparm_query": "nameSTARTSWITHcmdb_ci^ORDERBYname",
-            "sysparm_fields": "name,label,super_class",
+            "sysparm_fields": "sys_id,name,label,super_class",
             "sysparm_limit": "1000",
-            "sysparm_display_value": "true",
         },
     )
     records = response.get("result", [])
-    classes = [
-        {
+
+    # Build sys_id → class name lookup for resolving parent references
+    id_to_name: dict[str, str] = {}
+    for r in records:
+        sid = r.get("sys_id", "")
+        name = r.get("name", "")
+        if sid and name:
+            id_to_name[sid] = name
+
+    classes = []
+    for r in records:
+        parent_ref = r.get("super_class", "")
+        # super_class may be a plain sys_id or {"link": ..., "value": sys_id}
+        parent_id = parent_ref.get("value", "") if isinstance(parent_ref, dict) else str(parent_ref)
+        parent_name = id_to_name.get(parent_id, parent_id)
+        classes.append({
             "name": r.get("name", ""),
             "label": r.get("label", ""),
-            "parent": r.get("super_class", ""),
-        }
-        for r in records
-    ]
+            "parent": parent_name,
+        })
+
     result: dict[str, Any] = {"classes": classes, "truncated": len(records) >= 1000}
     cache.set(cache_key, result)
     return result

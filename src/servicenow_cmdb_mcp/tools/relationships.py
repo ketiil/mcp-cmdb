@@ -23,6 +23,9 @@ _REL_FIELDS = ["sys_id", "parent", "child", "type"]
 
 _MAX_LIMIT = 1000
 
+# Maximum nodes to visit in BFS/DFS traversals to prevent unbounded memory
+_MAX_TRAVERSAL_NODES = 500
+
 
 def _clamp_limit(limit: int) -> int:
     """Clamp limit to valid range [1, 1000]."""
@@ -35,9 +38,12 @@ def _clamp_offset(offset: int) -> int:
 
 
 def _validate_sys_id(sys_id: str) -> str | None:
-    """Return a validation error message if sys_id is empty/blank, else None."""
+    """Return a validation error message if sys_id is invalid, else None."""
     if not sys_id or not sys_id.strip():
         return "sys_id must not be empty."
+    # sys_ids are 32-char hex strings; reject anything with path traversal chars
+    if not all(c.isalnum() for c in sys_id):
+        return f"Invalid sys_id format: '{sys_id}'. Must contain only alphanumeric characters."
     return None
 
 
@@ -136,6 +142,8 @@ async def _fetch_relationships(
     # Split limit across directions so total doesn't exceed caller's limit
     per_direction_limit = limit // len(queries) if queries else limit
 
+    # Collect all relationship records first, then batch-resolve CIs
+    all_records: list[tuple[dict[str, Any], str]] = []  # (record, perspective)
     for query, perspective in queries:
         records = await client.get_records(
             table="cmdb_rel_ci",
@@ -145,21 +153,57 @@ async def _fetch_relationships(
             offset=offset,
         )
         for r in records:
-            parent_id = resolve_ref(r.get("parent", ""))
-            child_id = resolve_ref(r.get("child", ""))
-            type_id = resolve_ref(r.get("type", ""))
+            all_records.append((r, perspective))
 
-            # The "related" CI is the one that isn't our target
-            related_id = parent_id if perspective == "upstream" else child_id
-            related_ci = await _resolve_ci(client, related_id)
-            rel_type = await _resolve_rel_type(client, cache, type_id)
+    # Batch-resolve related CI names in one query instead of N individual calls
+    related_ids: set[str] = set()
+    for r, perspective in all_records:
+        parent_id = resolve_ref(r.get("parent", ""))
+        child_id = resolve_ref(r.get("child", ""))
+        related_id = parent_id if perspective == "upstream" else child_id
+        if related_id:
+            related_ids.add(related_id)
 
-            results.append({
-                "relationship_sys_id": r.get("sys_id", ""),
-                "direction": perspective,
-                "related_ci": related_ci,
-                "relationship_type": rel_type,
-            })
+    ci_map: dict[str, dict[str, str]] = {}
+    if related_ids:
+        ids_list = list(related_ids)
+        for i in range(0, len(ids_list), 100):
+            batch = ids_list[i:i + 100]
+            batch_str = ",".join(batch)
+            ci_records = await client.get_records(
+                table="cmdb_ci",
+                query=f"sys_idIN{batch_str}",
+                fields=_CI_REF_FIELDS,
+                limit=len(batch),
+            )
+            for ci in ci_records:
+                sid = ci.get("sys_id", "")
+                ci_map[sid] = {
+                    "sys_id": sid,
+                    "name": ci.get("name", ""),
+                    "sys_class_name": ci.get("sys_class_name", ""),
+                    "operational_status": ci.get("operational_status", ""),
+                }
+
+    # Build results using the batch-resolved data
+    for r, perspective in all_records:
+        parent_id = resolve_ref(r.get("parent", ""))
+        child_id = resolve_ref(r.get("child", ""))
+        type_id = resolve_ref(r.get("type", ""))
+
+        related_id = parent_id if perspective == "upstream" else child_id
+        related_ci = ci_map.get(related_id, {
+            "sys_id": related_id, "name": "(unresolved)",
+            "sys_class_name": "", "operational_status": "",
+        })
+        rel_type = await _resolve_rel_type(client, cache, type_id)
+
+        results.append({
+            "relationship_sys_id": r.get("sys_id", ""),
+            "direction": perspective,
+            "related_ci": related_ci,
+            "relationship_type": rel_type,
+        })
 
     return results
 
@@ -294,7 +338,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             ci_info = await _resolve_ci(client, sys_id)
             node: dict[str, Any] = {"ci": ci_info, "children": []}
 
-            if sys_id in visited or depth >= max_depth:
+            if sys_id in visited or depth >= max_depth or len(visited) >= _MAX_TRAVERSAL_NODES:
                 return node
             visited.add(sys_id)
 
@@ -433,8 +477,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             # Resolve rel_type name to sys_id if it doesn't look like a sys_id
             rel_type_sys_id = rel_type
             if len(rel_type) != 32 or not rel_type.isalnum():
-                # Sanitize: reject encoded query operators to prevent query injection
-                if "^" in rel_type:
+                # Sanitize: reject encoded query operators and excessive length
+                if "^" in rel_type or len(rel_type) > 200:
                     return _json({
                         "error": True,
                         "category": "ValidationError",
@@ -534,7 +578,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         impacted_services: list[dict[str, str]] = []
 
         async def collect(sys_id: str, depth: int) -> None:
-            if depth >= max_depth or sys_id in visited:
+            if depth >= max_depth or sys_id in visited or len(visited) >= _MAX_TRAVERSAL_NODES:
                 return
             visited.add(sys_id)
 

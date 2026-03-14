@@ -8,7 +8,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from servicenow_cmdb_mcp.client import ServiceNowClient
+from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import ServiceNowError
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,15 @@ def _clamp_limit(limit: int) -> int:
 def _clamp_offset(offset: int) -> int:
     """Clamp offset to non-negative."""
     return max(0, offset)
+
+
+def _validate_table_name(table: str) -> str | None:
+    """Validate table name is safe for URL interpolation. Returns error or None."""
+    if not table or not table.strip():
+        return "table must not be empty."
+    if not all(c.isalnum() or c == "_" for c in table):
+        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
+    return None
 
 
 def _json(result: Any) -> str:
@@ -112,6 +121,13 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "total_scanned" (CIs checked), and "next_scan_offset" (for continuation).
         """
         logger.info("find_orphan_cis: class=%s", ci_class)
+        if err := _validate_table_name(ci_class):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
         limit = _clamp_limit(limit)
         scan_offset = _clamp_offset(scan_offset)
 
@@ -132,24 +148,43 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 offset=scan_offset,
             )
 
+            # Batch check: find which CIs have any relationships using IN queries
+            # instead of one aggregate call per CI (N+1 → ~2 calls per batch of 100)
+            sys_ids = [r.get("sys_id", "") for r in records if r.get("sys_id")]
+            has_relationships: set[str] = set()
+
+            batch_size = 100
+            for i in range(0, len(sys_ids), batch_size):
+                batch = sys_ids[i:i + batch_size]
+                batch_str = ",".join(batch)
+                # Check as parent
+                parent_rels = await client.get_records(
+                    table="cmdb_rel_ci",
+                    query=f"parentIN{batch_str}",
+                    fields=["parent"],
+                    limit=_MAX_LIMIT,
+                )
+                for rel in parent_rels:
+                    has_relationships.add(resolve_ref(rel.get("parent", "")))
+                # Check as child
+                child_rels = await client.get_records(
+                    table="cmdb_rel_ci",
+                    query=f"childIN{batch_str}",
+                    fields=["child"],
+                    limit=_MAX_LIMIT,
+                )
+                for rel in child_rels:
+                    has_relationships.add(resolve_ref(rel.get("child", "")))
+
+            # Filter to orphans (CIs with no relationships)
             orphans: list[dict[str, Any]] = []
             scanned = 0
             for record in records:
-                scanned += 1
                 if len(orphans) >= limit:
                     break
+                scanned += 1
                 sys_id = record.get("sys_id", "")
-                if not sys_id:
-                    continue
-
-                # Check if CI appears as parent or child in any relationship
-                rel_query = f"parent={sys_id}^ORchild={sys_id}"
-                agg = await client.get_aggregate(
-                    table="cmdb_rel_ci",
-                    query=rel_query,
-                )
-                rel_count = _extract_count(agg)
-                if rel_count == 0:
+                if sys_id and sys_id not in has_relationships:
                     orphans.append(record)
 
             return _json({
@@ -197,6 +232,13 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             and "duplicate_groups" (list of groups, each with the shared value and matching CIs).
         """
         logger.info("find_duplicate_cis: class=%s field=%s", ci_class, match_field)
+        if err := _validate_table_name(ci_class):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -313,6 +355,13 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             ordered by sys_updated_on ascending (most stale first).
         """
         logger.info("find_stale_cis: class=%s days=%d", ci_class, days)
+        if err := _validate_table_name(ci_class):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         days = max(1, min(days, 3650))
@@ -381,6 +430,13 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "stale_count", "missing_name_count", and "by_discovery_source".
         """
         logger.info("cmdb_health_summary: class=%s stale_days=%d", ci_class, stale_days)
+        if err := _validate_table_name(ci_class):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
         stale_days = max(1, min(stale_days, 3650))
 
         try:

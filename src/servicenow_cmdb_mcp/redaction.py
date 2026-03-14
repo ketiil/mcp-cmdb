@@ -36,6 +36,17 @@ _PATTERNS: list[re.Pattern[str]] = [
         r"""(?:password|secret|token|credential|key)\s*[:=]\s*['"][A-Za-z0-9+/]{40,}=*['"]""",
         re.IGNORECASE,
     ),
+    # AWS access key IDs (AKIA...)
+    re.compile(r"""AKIA[0-9A-Z]{16}"""),
+    # Private key blocks (PEM format)
+    re.compile(
+        r"""-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----""",
+    ),
+    # Generic URLs with userinfo (scheme://user:pass@host)
+    re.compile(
+        r"""(?:https?|ftp|ldaps?)://[^'"\s]+:[^@'"\s]+@[^'"\s]+""",
+        re.IGNORECASE,
+    ),
 ]
 
 

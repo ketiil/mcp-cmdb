@@ -14,6 +14,28 @@ from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
 
 logger = logging.getLogger(__name__)
 
+_MAX_LIMIT = 1000
+
+
+def _clamp_limit(limit: int) -> int:
+    """Clamp limit to valid range [1, 1000]."""
+    return max(1, min(limit, _MAX_LIMIT))
+
+
+def _clamp_offset(offset: int) -> int:
+    """Clamp offset to non-negative."""
+    return max(0, offset)
+
+
+def _validate_table_name(table: str) -> str | None:
+    """Validate table name is safe for URL interpolation. Returns error or None."""
+    if not table or not table.strip():
+        return "table must not be empty."
+    if not all(c.isalnum() or c == "_" for c in table):
+        return f"Invalid table name: '{table}'. Must contain only letters, digits, and underscores."
+    return None
+
+
 # Default fields returned for CI list queries
 _CI_LIST_FIELDS = [
     "sys_id",
@@ -82,9 +104,11 @@ async def fetch_class_description(
         hierarchy.append(parent_name)
         current_name = parent_name
 
-    # Build OR query for all classes in the hierarchy
-    class_filter = "^ORname=".join(hierarchy)
-    dict_query = f"name={class_filter}^elementISNOTEMPTY"
+    # Build OR query for all classes in the hierarchy.
+    # Each OR branch must include elementISNOTEMPTY to avoid fetching
+    # table-level records (rows with empty element).
+    or_clauses = [f"name={cls}^elementISNOTEMPTY" for cls in hierarchy]
+    dict_query = "^OR".join(or_clauses)
 
     # Fetch field definitions from sys_dictionary for the full hierarchy
     field_records = await client.get_records(
@@ -205,6 +229,15 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("search_cis: class=%s name=%s", ci_class, name_filter)
+        if err := _validate_table_name(ci_class):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
+        limit = _clamp_limit(limit)
+        offset = _clamp_offset(offset)
         query_parts: list[str] = []
         if name_filter:
             query_parts.append(f"nameSTARTSWITH{name_filter}")
@@ -266,6 +299,15 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("query_cis_raw: table=%s query=%s", table, encoded_query)
+        if err := _validate_table_name(table):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
+        limit = _clamp_limit(limit)
+        offset = _clamp_offset(offset)
         result_fields = fields or _CI_LIST_FIELDS
 
         try:
@@ -384,6 +426,13 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             counts broken down by each distinct value of that field.
         """
         logger.info("count_cis: table=%s query=%s group_by=%s", table, encoded_query, group_by)
+        if err := _validate_table_name(table):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": err,
+                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
 
         try:
             result = await client.get_aggregate(

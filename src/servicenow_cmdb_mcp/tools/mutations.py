@@ -265,7 +265,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        op = pending.pop(token, None)
+        op = pending.get(token)
         if op is None:
             return _json({
                 "error": True,
@@ -276,6 +276,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         if op.is_expired():
+            del pending[token]
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -283,6 +284,9 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Call preview_ci_update again to get a new token.",
                 "retry": False,
             })
+
+        # Consume token — single-use
+        del pending[token]
 
         if op.operation != "update":
             return _json({
@@ -425,7 +429,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        op = pending.pop(token, None)
+        op = pending.get(token)
         if op is None:
             return _json({
                 "error": True,
@@ -436,6 +440,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         if op.is_expired():
+            del pending[token]
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -443,6 +448,9 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Call preview_ci_create again to get a new token.",
                 "retry": False,
             })
+
+        # Consume token — single-use
+        del pending[token]
 
         if op.operation != "create":
             return _json({
