@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
-from servicenow_cmdb_mcp.tools._utils import _json, _validate_cmdb_table
+from servicenow_cmdb_mcp.tools._utils import _TABLE_NAME_RE, _json, _validate_cmdb_table
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,8 @@ def _validate_fields(fields: dict[str, str]) -> str | None:
     if blocked:
         return f"Cannot set system-managed fields: {', '.join(sorted(blocked))}."
     for key, value in fields.items():
-        if not key.isidentifier():
-            return f"Invalid field name: '{key}'."
+        if not _TABLE_NAME_RE.match(key):
+            return f"Invalid field name: '{key}'. Must contain only ASCII letters, digits, and underscores."
         if isinstance(value, str) and len(value) > _MAX_FIELD_VALUE_LENGTH:
             return f"Field '{key}' value exceeds maximum length of {_MAX_FIELD_VALUE_LENGTH} characters."
     return None
@@ -116,6 +116,10 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
 
         The confirmation token is valid for 5 minutes. Pass it to confirm_ci_update
         to execute the change.
+
+        Prerequisites: Use search_cis or get_ci_details to find the CI sys_id first.
+
+        Typical workflow: preview_ci_update → review diff → confirm_ci_update
 
         Args:
             sys_id: The sys_id of the CI to update.
@@ -229,6 +233,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         token: str,
     ) -> str:
         """Execute a previously previewed CI update.
+
+        Prerequisites: You MUST call preview_ci_update first and use the token from its response.
 
         Requires the confirmation token returned by preview_ci_update. The token
         is single-use and expires after 5 minutes.
@@ -392,6 +398,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         token: str,
     ) -> str:
         """Execute a previously previewed CI creation.
+
+        Prerequisites: You MUST call preview_ci_create first and use the token from its response.
 
         Requires the confirmation token returned by preview_ci_create. The token
         is single-use and expires after 5 minutes.

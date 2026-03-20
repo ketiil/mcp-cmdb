@@ -435,4 +435,5 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "client_scripts": _category(results[2], results[3]),
             "flows": _category(results[4], results[5]),
             "acls": _category(results[6], results[7]),
+            "suggested_next": f"Use get_business_rules(table='{table}'), get_client_scripts(table='{table}'), get_acls(table='{table}'), or get_flows(table='{table}') for details.",
         })

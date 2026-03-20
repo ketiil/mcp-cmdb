@@ -64,6 +64,22 @@ def _validate_cmdb_table(table: str) -> str | None:
     return None
 
 
+def _extract_agg_count(agg_result: dict[str, Any]) -> int:
+    """Extract integer count from an Aggregate API response."""
+    result = agg_result.get("result", agg_result)
+    if isinstance(result, dict):
+        try:
+            return int(result.get("stats", {}).get("count", 0))
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
+
+def _nav_url(base_url: str, table: str, sys_id: str) -> str:
+    """Build a ServiceNow navigation URL for a record."""
+    return f"{base_url}/nav_to.do?uri={table}.do%3Fsys_id%3D{sys_id}"
+
+
 def _validate_sys_id(sys_id: str) -> str | None:
     """Return a validation error message if sys_id is invalid, else None.
 

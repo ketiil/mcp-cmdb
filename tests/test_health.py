@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from servicenow_cmdb_mcp.errors import SNPermissionError
-from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset
+from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset, _extract_agg_count
 from servicenow_cmdb_mcp.tools.health import (
-    _extract_count,
     _parse_agg_groups,
     register_health_tools,
 )
@@ -84,22 +83,22 @@ def tools(mock_client):
 
 class TestExtractCount:
     def test_normal_response(self):
-        assert _extract_count({"result": {"stats": {"count": "42"}}}) == 42
+        assert _extract_agg_count({"result": {"stats": {"count": "42"}}}) == 42
 
     def test_zero(self):
-        assert _extract_count({"result": {"stats": {"count": "0"}}}) == 0
+        assert _extract_agg_count({"result": {"stats": {"count": "0"}}}) == 0
 
     def test_missing_stats(self):
-        assert _extract_count({"result": {}}) == 0
+        assert _extract_agg_count({"result": {}}) == 0
 
     def test_missing_result(self):
-        assert _extract_count({}) == 0
+        assert _extract_agg_count({}) == 0
 
     def test_non_numeric_count(self):
-        assert _extract_count({"result": {"stats": {"count": "not-a-number"}}}) == 0
+        assert _extract_agg_count({"result": {"stats": {"count": "not-a-number"}}}) == 0
 
     def test_none_count(self):
-        assert _extract_count({"result": {"stats": {"count": None}}}) == 0
+        assert _extract_agg_count({"result": {"stats": {"count": None}}}) == 0
 
 
 class TestParseAggGroups:
@@ -246,8 +245,8 @@ class TestFindOrphanCis:
 
         result = _parse(await tools["find_orphan_cis"]())
         assert result["total_scanned"] == 2
-        assert result["next_scan_offset"] == 2
-        assert "may_have_more" in result
+        assert result["next_offset"] == 2
+        assert "has_more" in result
 
     @pytest.mark.asyncio
     async def test_scan_offset_continues(self, mock_client, tools):
@@ -287,7 +286,7 @@ class TestFindDuplicateCis:
 
         result = _parse(await tools["find_duplicate_cis"]())
         # Only groups with count > 1 should be returned
-        assert result["duplicate_group_count"] == 2
+        assert result["count"] == 2
         assert result["duplicate_groups"][0]["value"] == "web-server-01"
         assert result["duplicate_groups"][0]["total_count"] == 3
 
@@ -299,7 +298,7 @@ class TestFindDuplicateCis:
         )
 
         result = _parse(await tools["find_duplicate_cis"]())
-        assert result["duplicate_group_count"] == 0
+        assert result["count"] == 0
 
     @pytest.mark.asyncio
     async def test_respects_match_field(self, mock_client, tools):
@@ -329,7 +328,7 @@ class TestFindDuplicateCis:
 
         result = _parse(await tools["find_duplicate_cis"]())
         # Only the safe group should have records fetched
-        assert result["duplicate_group_count"] == 1
+        assert result["count"] == 1
         assert result["duplicate_groups"][0]["value"] == "safe-name"
 
     @pytest.mark.asyncio
@@ -350,7 +349,7 @@ class TestFindStaleCis:
 
         result = _parse(await tools["find_stale_cis"](days=30))
         assert result["count"] == 2
-        assert result["total_stale"] == 50
+        assert result["total_count"] == 50
         assert result["stale_days"] == 30
 
     @pytest.mark.asyncio

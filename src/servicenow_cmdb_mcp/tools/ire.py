@@ -14,6 +14,7 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _json,
+    _nav_url,
     _validate_cmdb_table,
     _validate_sys_id,
     _validate_table_name,
@@ -105,6 +106,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(rules),
                 "table_filter": table or "(all)",
                 "identification_rules": rules,
+                "suggested_next": "Use get_reconciliation_rules(table) to see data refresh rules, or explain_duplicate(sys_id_a, sys_id_b) to compare two CIs against these rules.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -190,6 +192,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(rules),
                 "table_filter": table or "(all)",
                 "reconciliation_rules": rules,
+                "suggested_next": "Use get_identification_rules(table) to see matching rules, or find_duplicate_cis(table) to find potential duplicates.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -212,6 +215,10 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         compares the identifier fields side-by-side. This helps determine whether
         two CIs are true duplicates or false positives, and which identification
         rule matched (or failed to match).
+
+        Prerequisites: Use find_duplicate_cis to identify the duplicate pair first.
+
+        Example: explain_duplicate(sys_id_a="abc123...", sys_id_b="def456...", table="cmdb_ci_server")
 
         Args:
             sys_id_a: sys_id of the first CI.
@@ -330,11 +337,13 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                     "sys_id": sys_id_a,
                     "name": ci_a.get("name", ""),
                     "sys_class_name": ci_a.get("sys_class_name", ""),
+                    "url": _nav_url(client.base_url, table, sys_id_a),
                 },
                 "ci_b": {
                     "sys_id": sys_id_b,
                     "name": ci_b.get("name", ""),
                     "sys_class_name": ci_b.get("sys_class_name", ""),
+                    "url": _nav_url(client.base_url, table, sys_id_b),
                 },
                 "table": table,
                 "identification_rules": rule_summaries,

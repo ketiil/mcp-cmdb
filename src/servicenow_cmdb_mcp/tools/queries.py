@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,13 +14,24 @@ from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
+    _extract_agg_count,
     _json,
+    _nav_url,
     _validate_cmdb_table,
     _validate_sys_id,
     _validate_table_name,
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_total(client: ServiceNowClient, table: str, query: str) -> int | None:
+    """Get total record count via aggregate, returning None on failure."""
+    try:
+        agg = await client.get_aggregate(table=table, query=query)
+        return _extract_agg_count(agg)
+    except ServiceNowError:
+        return None
 
 
 # Default fields returned for CI list queries
@@ -194,11 +206,16 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         Builds an encoded query from the provided parameters and returns matching CIs.
         Name filtering uses STARTSWITH by default for performance (indexed operation).
 
+        Example: search_cis(ci_class="cmdb_ci_linux_server", name_filter="prod", operational_status="1")
+
+        Typical workflow: suggest_table → search_cis → get_ci_details → get_ci_relationships
+
         Args:
             ci_class: CMDB table/class to query (e.g. cmdb_ci_server, cmdb_ci_linux_server).
                       Defaults to cmdb_ci (all CI types).
             name_filter: Filter CIs whose name starts with this value. Leave empty for no name filter.
-            operational_status: Filter by operational status value (e.g. "1" for Operational).
+            operational_status: Filter by operational status value. Common values:
+                              "1" = Operational, "2" = Non-Operational, "6" = Retired.
             os_filter: Filter by operating system (STARTSWITH match on the os field).
             location: Filter by location display value (STARTSWITH match).
             limit: Maximum number of results to return (1-1000, default 25).
@@ -233,14 +250,31 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         result_fields = fields or _CI_LIST_FIELDS
 
         try:
-            records = await client.get_records(
+            records_coro = client.get_records(
                 table=ci_class,
                 query=query,
                 fields=result_fields,
                 limit=limit,
                 offset=offset,
             )
-            return _json({"count": len(records), "records": records})
+            total_coro = _safe_total(client, ci_class, query)
+            records, total = await asyncio.gather(records_coro, total_coro)
+
+            for r in records:
+                sid = r.get("sys_id", "")
+                if sid:
+                    r["url"] = _nav_url(client.base_url, ci_class, sid)
+
+            result: dict[str, Any] = {
+                "count": len(records),
+                "records": records,
+                "suggested_next": "Use get_ci_details(sys_id) for full record, get_ci_relationships(sys_id) for dependencies, or count_cis for totals.",
+            }
+            if total is not None:
+                result["total_count"] = total
+                result["has_more"] = offset + len(records) < total
+                result["next_offset"] = offset + len(records)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -292,14 +326,31 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         result_fields = fields or _CI_LIST_FIELDS
 
         try:
-            records = await client.get_records(
+            records_coro = client.get_records(
                 table=table,
                 query=encoded_query,
                 fields=result_fields,
                 limit=limit,
                 offset=offset,
             )
-            return _json({"count": len(records), "records": records})
+            total_coro = _safe_total(client, table, encoded_query)
+            records, total = await asyncio.gather(records_coro, total_coro)
+
+            for r in records:
+                sid = r.get("sys_id", "")
+                if sid:
+                    r["url"] = _nav_url(client.base_url, table, sid)
+
+            result: dict[str, Any] = {
+                "count": len(records),
+                "records": records,
+                "suggested_next": "Use get_ci_details(sys_id) for full record, or get_ci_relationships(sys_id) for dependencies.",
+            }
+            if total is not None:
+                result["total_count"] = total
+                result["has_more"] = offset + len(records) < total
+                result["next_offset"] = offset + len(records)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -320,6 +371,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         Returns all requested fields for the CI. If no fields are specified, returns a broad
         set of common CI attributes. Use this tool when you need complete information about
         a specific CI, such as after finding it via search_cis.
+
+        Prerequisites: Use search_cis or query_cis_raw to find the sys_id first.
 
         Args:
             sys_id: The sys_id of the CI record to retrieve.
@@ -380,6 +433,16 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
                 sys_id=sys_id,
                 fields=result_fields,
             )
+            if not record:
+                return _json({
+                    "error": True,
+                    "category": "NotFoundError",
+                    "message": f"No CI found with sys_id '{sys_id}' in table '{table}'",
+                    "suggestion": "Verify the sys_id and table name. The CI may exist in a different class table.",
+                    "retry": False,
+                })
+            record["url"] = _nav_url(client.base_url, table, sys_id)
+            record["suggested_next"] = "Use get_ci_relationships(sys_id) for dependencies, or preview_ci_update(sys_id, ...) to modify."
             return _json(record)
         except NotFoundError:
             return _json({
@@ -408,6 +471,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
 
         Uses the ServiceNow Stats API (/api/now/stats) for efficient counting without
         fetching actual records. Optionally group results by a field to get counts per value.
+
+        Example: count_cis(table="cmdb_ci_linux_server", group_by="operational_status")
 
         Args:
             table: CMDB table to count records in (e.g. cmdb_ci_server). Defaults to cmdb_ci.
@@ -472,7 +537,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         cached = cache.get(cache_key)
         if cached is not None:
             classes = cached[:limit]
-            return _json({"count": len(classes), "classes": classes, "cached": True})
+            return _json({
+                "count": len(classes),
+                "classes": classes,
+                "cached": True,
+                "suggested_next": "Use describe_ci_class(class_name) for field definitions.",
+            })
 
         try:
             records = await client.get_records(
@@ -493,7 +563,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             ]
             cache.set(cache_key, classes)
             sliced = classes[:limit]
-            return _json({"count": len(sliced), "classes": sliced, "cached": False})
+            return _json({
+                "count": len(sliced),
+                "classes": sliced,
+                "cached": False,
+                "suggested_next": "Use describe_ci_class(class_name) for field definitions.",
+            })
         except ServiceNowError as e:
             return e.to_json()
 
@@ -516,6 +591,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         Use this tool to understand the schema of a CI class before building queries,
         or to check what fields and relationships are available.
 
+        Prerequisites: Use list_ci_classes to find available class names, or suggest_table to find the right class.
+
         Args:
             class_name: The CMDB class name to describe (e.g. cmdb_ci_server, cmdb_ci_linux_server).
 
@@ -528,7 +605,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
 
         try:
             result = await fetch_class_description(client, cache, class_name)
-            return _json(result)
+            return _json({**result, "suggested_next": f"Use search_cis(ci_class='{class_name}') to query CIs of this class."})
         except ServiceNowError as e:
             return e.to_json()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -14,7 +14,9 @@ from servicenow_cmdb_mcp.tools._utils import (
     _MAX_LIMIT,
     _clamp_limit,
     _clamp_offset,
+    _extract_agg_count,
     _json,
+    _nav_url,
     _validate_cmdb_table,
 )
 
@@ -29,18 +31,6 @@ _HEALTH_CI_FIELDS = [
     "sys_updated_on",
     "discovery_source",
 ]
-
-
-def _extract_count(agg_result: dict[str, Any]) -> int:
-    """Extract the integer count from an Aggregate API response."""
-    result = agg_result.get("result", agg_result)
-    if isinstance(result, dict):
-        stats = result.get("stats", {})
-        try:
-            return int(stats.get("count", 0))
-        except (ValueError, TypeError):
-            return 0
-    return 0
 
 
 def _parse_agg_groups(agg_result: dict[str, Any], empty_label: str = "unknown") -> dict[str, int]:
@@ -96,11 +86,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             operational_status: Optional filter by operational status (e.g. "1" for Operational).
             limit: Maximum orphan CIs to return (1-1000, default 25).
             scan_offset: Offset into the CI table to start scanning from. Use the
-                        "next_scan_offset" value from a previous response to continue.
+                        "next_offset" value from a previous response to continue.
 
         Returns:
             JSON object with "ci_class", "count", "orphan_cis" list,
-            "total_scanned" (CIs checked), and "next_scan_offset" (for continuation).
+            "total_scanned" (CIs checked), and "next_offset" (for continuation).
         """
         logger.info("find_orphan_cis: class=%s", ci_class)
         if err := _validate_cmdb_table(ci_class):
@@ -167,6 +157,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 scanned += 1
                 sys_id = record.get("sys_id", "")
                 if sys_id and sys_id not in has_relationships:
+                    record["url"] = _nav_url(client.base_url, ci_class, sys_id)
                     orphans.append(record)
 
             # There may be more if we fetched a full batch OR if we stopped
@@ -179,8 +170,9 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(orphans),
                 "orphan_cis": orphans,
                 "total_scanned": scanned,
-                "next_scan_offset": scan_offset + scanned,
-                "may_have_more": has_unscanned or fetched_full_batch,
+                "has_more": has_unscanned or fetched_full_batch,
+                "next_offset": scan_offset + scanned,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect specific orphans.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -194,7 +186,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     )
     async def find_duplicate_cis(
         ci_class: str = "cmdb_ci",
-        match_field: str = "name",
+        match_field: Literal["name", "serial_number", "asset_tag", "ip_address", "mac_address", "fqdn"] = "name",
         name_filter: str = "",
         limit: int = 25,
         offset: int = 0,
@@ -206,6 +198,8 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         for finding CIs that may have been created by multiple discovery sources
         or manual entry.
 
+        Example: find_duplicate_cis(ci_class="cmdb_ci_server", match_field="name")
+
         Args:
             ci_class: CMDB table to search (e.g. cmdb_ci_server). Defaults to cmdb_ci.
             match_field: Field to match duplicates on. Defaults to "name".
@@ -215,8 +209,9 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             offset: Pagination offset.
 
         Returns:
-            JSON object with "ci_class", "match_field", "duplicate_group_count",
-            and "duplicate_groups" (list of groups, each with the shared value and matching CIs).
+            JSON object with "ci_class", "match_field", "count", "total_count",
+            "has_more", "next_offset", and "duplicate_groups" (list of groups,
+            each with the shared value and matching CIs).
         """
         logger.info("find_duplicate_cis: class=%s field=%s", ci_class, match_field)
         if err := _validate_cmdb_table(ci_class):
@@ -229,7 +224,8 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
-        # Validate match_field to prevent query injection
+        # Validate match_field to prevent query injection.
+        # Keep in sync with the Literal type annotation on the match_field parameter above.
         allowed_fields = {"name", "serial_number", "asset_tag", "ip_address", "mac_address", "fqdn"}
         if match_field not in allowed_fields:
             return _json({
@@ -291,6 +287,10 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                     fields=fields,
                     limit=10,  # Cap per-group to avoid excessive fetches
                 )
+                for gr in group_records:
+                    sid = gr.get("sys_id", "")
+                    if sid:
+                        gr["url"] = _nav_url(client.base_url, ci_class, sid)
                 duplicate_groups.append({
                     "value": value,
                     "total_count": count,
@@ -300,9 +300,12 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return _json({
                 "ci_class": ci_class,
                 "match_field": match_field,
-                "duplicate_group_count": len(duplicate_groups),
-                "total_duplicate_groups": len(duplicate_values),
+                "count": len(duplicate_groups),
+                "total_count": len(duplicate_values),
+                "has_more": offset + len(paginated) < len(duplicate_values),
+                "next_offset": offset + len(paginated),
                 "duplicate_groups": duplicate_groups,
+                "suggested_next": "Use explain_duplicate(sys_id_a, sys_id_b) to understand why duplicates weren't merged.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -338,8 +341,9 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             offset: Pagination offset.
 
         Returns:
-            JSON object with "ci_class", "stale_days", "count", and "stale_cis" list
-            ordered by sys_updated_on ascending (most stale first).
+            JSON object with "ci_class", "stale_days", "count", "total_count",
+            "has_more", "next_offset", and "stale_cis" list ordered by
+            sys_updated_on ascending (most stale first).
         """
         logger.info("find_stale_cis: class=%s days=%d", ci_class, days)
         if err := _validate_cmdb_table(ci_class):
@@ -359,28 +363,33 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append(f"operational_status={operational_status}")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table=ci_class,
-                query=query,
-                fields=_HEALTH_CI_FIELDS,
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYsys_updated_on",
+            records, agg = await asyncio.gather(
+                client.get_records(
+                    table=ci_class,
+                    query=query,
+                    fields=_HEALTH_CI_FIELDS,
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYsys_updated_on",
+                ),
+                client.get_aggregate(table=ci_class, query=query),
             )
+            for r in records:
+                sid = r.get("sys_id", "")
+                if sid:
+                    r["url"] = _nav_url(client.base_url, ci_class, sid)
 
-            # Also get a count for context
-            agg = await client.get_aggregate(
-                table=ci_class,
-                query=query,
-            )
-            total_stale = _extract_count(agg)
+            total_stale = _extract_agg_count(agg)
 
             return _json({
                 "ci_class": ci_class,
                 "stale_days": days,
                 "count": len(records),
-                "total_stale": total_stale,
+                "total_count": total_stale,
+                "has_more": offset + len(records) < total_stale,
+                "next_offset": offset + len(records),
                 "stale_cis": records,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect, or get_discovery_status to check if discovery is running.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -429,9 +438,9 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         try:
             stale_query = f"sys_updated_on<javascript:gs.daysAgo({stale_days})"
 
-            async def _safe_agg(**kwargs: str) -> dict:
+            async def _safe_agg(query: str = "", group_by: str = "") -> dict[str, Any]:
                 try:
-                    return await client.get_aggregate(table=ci_class, **kwargs)
+                    return await client.get_aggregate(table=ci_class, query=query, group_by=group_by)
                 except ServiceNowError:
                     return {}
 
@@ -448,12 +457,13 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
 
             return _json({
                 "ci_class": ci_class,
-                "total_count": _extract_count(total_agg),
+                "total_count": _extract_agg_count(total_agg),
                 "by_operational_status": _parse_agg_groups(status_agg, empty_label="unknown"),
-                "stale_count": _extract_count(stale_agg),
+                "stale_count": _extract_agg_count(stale_agg),
                 "stale_days": stale_days,
-                "missing_name_count": _extract_count(missing_name_agg),
+                "missing_name_count": _extract_agg_count(missing_name_agg),
                 "by_discovery_source": _parse_agg_groups(source_agg, empty_label="(empty)"),
+                "suggested_next": "For details, call find_orphan_cis, find_duplicate_cis, or find_stale_cis.",
             })
         except ServiceNowError as e:
             return e.to_json()

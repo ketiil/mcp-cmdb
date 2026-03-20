@@ -85,6 +85,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return _json({
                 "count": len(schedules),
                 "schedules": schedules,
+                "suggested_next": "Use get_discovery_status(schedule_name) to see recent scan results, or get_discovery_errors() for error logs.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -172,6 +173,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return _json({
                 "count": len(statuses),
                 "statuses": statuses,
+                "suggested_next": "Use get_discovery_errors() to see error details for failed scans, or get_ci_details(sys_id) on a discovered CI.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -257,6 +259,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(errors),
                 "days_back": days,
                 "errors": errors,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect a CI referenced in an error, or list_discovery_schedules() to review schedule configuration.",
             })
         except ServiceNowError as e:
             return e.to_json()

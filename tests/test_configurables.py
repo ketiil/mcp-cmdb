@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset, _validate_table_name
+from servicenow_cmdb_mcp.tools._utils import (
+    _clamp_limit,
+    _clamp_offset,
+    _extract_agg_count,
+    _nav_url,
+    _validate_table_name,
+)
 from servicenow_cmdb_mcp.tools.configurables import (
     _redact_script_fields,
     register_configurable_tools,
@@ -96,6 +102,43 @@ class TestValidateTableName:
 
     def test_slash(self):
         assert _validate_table_name("cmdb_ci/foo") is not None
+
+
+class TestNavUrl:
+    def test_normal(self):
+        url = _nav_url("https://instance.service-now.com", "cmdb_ci_server", "abc123def456")
+        assert url == "https://instance.service-now.com/nav_to.do?uri=cmdb_ci_server.do%3Fsys_id%3Dabc123def456"
+
+    def test_encodes_question_mark_and_equals(self):
+        url = _nav_url("https://test.com", "cmdb_ci", "aaa")
+        # The uri parameter value should use encoded ? and = (not raw)
+        assert "cmdb_ci.do%3Fsys_id%3D" in url
+        # Only one raw ? should exist (for nav_to.do?uri=)
+        assert url.count("?") == 1
+
+    def test_no_trailing_slash_on_base(self):
+        url = _nav_url("https://test.com", "cmdb_ci", "id1")
+        assert "//nav_to" not in url
+
+
+class TestExtractAggCount:
+    def test_normal(self):
+        assert _extract_agg_count({"result": {"stats": {"count": "42"}}}) == 42
+
+    def test_zero(self):
+        assert _extract_agg_count({"result": {"stats": {"count": "0"}}}) == 0
+
+    def test_missing_stats(self):
+        assert _extract_agg_count({"result": {}}) == 0
+
+    def test_missing_result(self):
+        assert _extract_agg_count({}) == 0
+
+    def test_non_numeric(self):
+        assert _extract_agg_count({"result": {"stats": {"count": "not-a-number"}}}) == 0
+
+    def test_none_count(self):
+        assert _extract_agg_count({"result": {"stats": {"count": None}}}) == 0
 
 
 class TestRedactScriptFields:

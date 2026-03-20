@@ -100,6 +100,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(sources),
                 "target_table_filter": target_table or "(all)",
                 "data_sources": sources,
+                "suggested_next": "Use get_import_set_runs(table_name) to see recent runs for a data source, or get_transform_errors(target_table) for mapping failures.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -198,6 +199,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(runs),
                 "days_back": days,
                 "import_set_runs": runs,
+                "suggested_next": "Use get_transform_errors(target_table) to see row-level errors, or list_data_sources() to review source configuration.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -285,6 +287,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "count": len(errors),
                 "days_back": days,
                 "transform_errors": errors,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect a target CI, or get_import_set_runs() to see the parent import run.",
             })
         except ServiceNowError as e:
             return e.to_json()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -14,6 +14,7 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _json,
+    _nav_url,
     _validate_sys_id,
 )
 
@@ -32,7 +33,7 @@ _MAX_TRAVERSAL_NODES = 500
 async def _resolve_ci(client: ServiceNowClient, sys_id: str) -> dict[str, str]:
     """Resolve a CI sys_id to a summary dict with name and class."""
     if not sys_id:
-        return {"sys_id": "", "name": "(unresolved)", "sys_class_name": "", "operational_status": ""}
+        return {"sys_id": "", "name": "(unresolved)", "sys_class_name": "", "operational_status": "", "url": ""}
     try:
         record = await client.get_record(
             table="cmdb_ci",
@@ -40,15 +41,17 @@ async def _resolve_ci(client: ServiceNowClient, sys_id: str) -> dict[str, str]:
             fields=_CI_REF_FIELDS,
         )
         if record:
+            cls = record.get("sys_class_name", "cmdb_ci")
             return {
                 "sys_id": record.get("sys_id", sys_id),
                 "name": record.get("name", ""),
-                "sys_class_name": record.get("sys_class_name", ""),
+                "sys_class_name": cls,
                 "operational_status": record.get("operational_status", ""),
+                "url": _nav_url(client.base_url, cls or "cmdb_ci", sys_id),
             }
     except ServiceNowError:
         pass
-    return {"sys_id": sys_id, "name": "(unresolved)", "sys_class_name": "", "operational_status": ""}
+    return {"sys_id": sys_id, "name": "(unresolved)", "sys_class_name": "", "operational_status": "", "url": ""}
 
 
 async def _resolve_rel_type(client: ServiceNowClient, cache: MetadataCache, type_sys_id: str) -> dict[str, str]:
@@ -156,11 +159,13 @@ async def _fetch_relationships(
             )
             for ci in ci_records:
                 sid = ci.get("sys_id", "")
+                cls = ci.get("sys_class_name", "cmdb_ci")
                 ci_map[sid] = {
                     "sys_id": sid,
                     "name": ci.get("name", ""),
-                    "sys_class_name": ci.get("sys_class_name", ""),
+                    "sys_class_name": cls,
                     "operational_status": ci.get("operational_status", ""),
+                    "url": _nav_url(client.base_url, cls or "cmdb_ci", sid),
                 }
 
     # Build results using the batch-resolved data
@@ -198,7 +203,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
     )
     async def get_ci_relationships(
         ci_sys_id: str,
-        direction: str = "both",
+        direction: Literal["upstream", "downstream", "both"] = "both",
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -211,6 +216,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         In ServiceNow CMDB relationships:
         - Upstream: this CI is the CHILD in the relationship (e.g., "Runs on" a server)
         - Downstream: this CI is the PARENT (e.g., a server that other CIs "Run on")
+
+        Prerequisites: Use search_cis to find the CI sys_id first.
+
+        Example: get_ci_relationships(ci_sys_id="abc123...", direction="downstream", limit=10)
 
         Args:
             ci_sys_id: The sys_id of the CI to get relationships for.
@@ -253,6 +262,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 "direction": direction,
                 "count": len(relationships),
                 "relationships": relationships,
+                "suggested_next": "Use get_dependency_tree(sys_id) for full dependency chain, or get_impact_summary(sys_id) for service impact.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -266,15 +276,18 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
     )
     async def get_dependency_tree(
         ci_sys_id: str,
-        direction: str = "upstream",
+        direction: Literal["upstream", "downstream"] = "upstream",
         max_depth: int = 3,
         limit_per_level: int = 10,
     ) -> str:
         """Walk the dependency tree from a CI with configurable depth and direction.
 
         Recursively traverses relationships to build a tree of dependencies. Useful for
-        understanding the full dependency chain of a CI — what it runs on, what runs on it,
-        or both.
+        understanding the full dependency chain of a CI — what it runs on, what runs on it.
+
+        Prerequisites: Use search_cis to find the root CI sys_id first.
+
+        Example: get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=3)
 
         Args:
             ci_sys_id: The sys_id of the starting CI.
@@ -341,6 +354,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 "direction": direction,
                 "max_depth": max_depth,
                 "tree": tree,
+                "suggested_next": "Use get_impact_summary(sys_id) for service impact, or get_ci_details(sys_id) to inspect a specific node.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -367,6 +381,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         Returns:
             JSON object with "count" and "relationship_types" list containing
             sys_id, name, parent_descriptor, and child_descriptor for each type.
+
+        Typical workflow: list_relationship_types → find_related_cis(ci_sys_id, rel_type=sys_id)
         """
         logger.info("list_relationship_types")
         limit = _clamp_limit(limit)
@@ -374,7 +390,12 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         cached = cache.get(cache_key)
         if cached is not None:
             sliced = cached[:limit]
-            return _json({"count": len(sliced), "relationship_types": sliced, "cached": True})
+            return _json({
+                "count": len(sliced),
+                "relationship_types": sliced,
+                "cached": True,
+                "suggested_next": "Use find_related_cis(ci_sys_id, rel_type=<type_sys_id>) to find CIs with a specific relationship type.",
+            })
 
         try:
             records = await client.get_records(
@@ -394,7 +415,12 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             ]
             cache.set(cache_key, rel_types)
             sliced = rel_types[:limit]
-            return _json({"count": len(sliced), "relationship_types": sliced, "cached": False})
+            return _json({
+                "count": len(sliced),
+                "relationship_types": sliced,
+                "cached": False,
+                "suggested_next": "Use find_related_cis(ci_sys_id, rel_type=<type_sys_id>) to find CIs with a specific relationship type.",
+            })
         except ServiceNowError as e:
             return e.to_json()
 
@@ -408,7 +434,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
     async def find_related_cis(
         ci_sys_id: str,
         rel_type: str,
-        direction: str = "both",
+        direction: Literal["upstream", "downstream", "both"] = "both",
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -492,6 +518,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 "direction": direction,
                 "count": len(relationships),
                 "relationships": relationships,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect a related CI, or get_dependency_tree(sys_id) for the full chain.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -516,6 +543,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
 
         Use this tool for change impact assessment — understanding what would be
         affected if this CI goes down.
+
+        Prerequisites: Use search_cis to find the CI sys_id first.
 
         Args:
             ci_sys_id: The sys_id of the CI to assess impact for.
@@ -593,6 +622,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 "impacted_by_class": by_class,
                 "impacted_services": impacted_services,
                 "traversal_depth": max_depth,
+                "suggested_next": "Use get_ci_details(sys_id) to inspect impacted CIs, or get_dependency_tree(sys_id) to trace the full chain.",
             })
         except ServiceNowError as e:
             return e.to_json()

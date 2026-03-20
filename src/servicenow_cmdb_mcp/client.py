@@ -69,6 +69,11 @@ class ServiceNowClient:
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
 
+    @property
+    def base_url(self) -> str:
+        """Return the ServiceNow instance base URL (no trailing slash)."""
+        return self._base_url
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._http.aclose()

@@ -1,10 +1,38 @@
+# Credentials
 .env
+
+# Virtual environment
 .venv/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
 dist/
 build/
+
+# Tools
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Local experimentation
+spike/
+
+# Generated specs
+docs/superpowers/
