@@ -27,11 +27,21 @@ def create_app() -> FastMCP:
     """Create and configure the MCP server with all tools and resources.
 
     Initializes settings from environment variables, creates the ServiceNow
-    client, and registers all tool and resource modules.
+    client, and registers all tool and resource modules.  If credentials are
+    missing, the server still starts so that tool metadata can be introspected;
+    tools will return errors when called without a configured client.
     """
-    settings = Settings()  # type: ignore[call-arg]
-    client = ServiceNowClient(settings)
-    cache = MetadataCache(ttl=settings.cache_ttl)
+    try:
+        settings = Settings()  # type: ignore[call-arg]
+    except Exception:
+        logger.warning(
+            "ServiceNow credentials not configured — server will start "
+            "but tools will fail until environment variables are set."
+        )
+        settings = None
+
+    client = ServiceNowClient(settings) if settings else None  # type: ignore[arg-type]
+    cache = MetadataCache(ttl=settings.cache_ttl if settings else 3600)
 
     mcp = FastMCP(
         "ServiceNow CMDB",

@@ -1,6 +1,6 @@
 [project]
 name = "servicenow-cmdb-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server connecting Claude to ServiceNow CMDB via natural language"
 requires-python = ">=3.11"
 dependencies = [
