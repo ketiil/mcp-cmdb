@@ -1,0 +1,48 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/npm/@anthropic-ai/mcp-server-schema@2025-12-11/dist/server.schema.json",
+  "name": "io.github.ketiil/mcp-cmdb",
+  "description": "MCP server connecting Claude to ServiceNow CMDB via natural language. Deep CMDB focus with relationship traversal, health auditing, dependency mapping, configurable inspection, and two-phase safe mutations.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/ketiil/mcp-cmdb",
+    "source": "github"
+  },
+  "package": {
+    "name": "servicenow-cmdb-mcp",
+    "registryType": "github",
+    "runtime": "uv",
+    "transport": "stdio"
+  },
+  "environment": [
+    {
+      "name": "SN_INSTANCE_URL",
+      "description": "ServiceNow instance URL (e.g. https://your-instance.service-now.com)",
+      "required": true,
+      "secret": false
+    },
+    {
+      "name": "SN_CLIENT_ID",
+      "description": "OAuth 2.0 client ID from ServiceNow Application Registry",
+      "required": true,
+      "secret": true
+    },
+    {
+      "name": "SN_CLIENT_SECRET",
+      "description": "OAuth 2.0 client secret",
+      "required": true,
+      "secret": true
+    },
+    {
+      "name": "SN_USERNAME",
+      "description": "ServiceNow service account username",
+      "required": true,
+      "secret": false
+    },
+    {
+      "name": "SN_PASSWORD",
+      "description": "ServiceNow service account password",
+      "required": true,
+      "secret": true
+    }
+  ]
+}
