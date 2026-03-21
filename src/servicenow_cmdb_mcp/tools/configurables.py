@@ -476,8 +476,12 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             """Run an aggregate call, returning an error marker on failure."""
             try:
                 return await client.get_aggregate(table=agg_table, query=query)
-            except ServiceNowError:
-                return {"_error": True}
+            except ServiceNowError as exc:
+                return {
+                    "_error": True,
+                    "_error_category": exc.category,
+                    "_retry": exc.retry,
+                }
 
         results = await asyncio.gather(
             _safe_aggregate("sys_script", f"collection={table}"),
@@ -491,8 +495,14 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         )
 
         def _category(total: dict, active: dict) -> dict[str, Any]:
-            if total.get("_error") or active.get("_error"):
-                return {"total_count": None, "active_count": None, "error": "Access denied or unavailable"}
+            err = total if total.get("_error") else active if active.get("_error") else None
+            if err:
+                return {
+                    "total_count": None,
+                    "active_count": None,
+                    "error": err.get("_error_category", "Unknown"),
+                    "retry": err.get("_retry", False),
+                }
             return {"total_count": _count(total), "active_count": _count(active)}
 
         return _json({

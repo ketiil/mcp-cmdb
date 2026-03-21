@@ -1,4 +1,4 @@
-"""Tests for server.py — check_connection health-check tool."""
+"""Tests for server.py — check_connection health-check tool and client utilities."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from servicenow_cmdb_mcp.client import ServiceNowClient
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -123,3 +125,31 @@ class TestCheckConnection:
         result = _parse(await tools["check_connection"]())
         assert result["connected"] is True
         assert result["roles"] == []
+
+
+# ── URL credential sanitization ───────────────────────────────────
+
+
+class TestStripCredentials:
+    def test_no_credentials(self):
+        assert ServiceNowClient._strip_credentials("https://instance.service-now.com") == "https://instance.service-now.com"
+
+    def test_strips_username_password(self):
+        result = ServiceNowClient._strip_credentials("https://admin:secret@instance.service-now.com")
+        assert result == "https://instance.service-now.com"
+        assert "admin" not in result
+        assert "secret" not in result
+
+    def test_strips_username_only(self):
+        result = ServiceNowClient._strip_credentials("https://admin@instance.service-now.com")
+        assert result == "https://instance.service-now.com"
+        assert "admin" not in result
+
+    def test_preserves_port(self):
+        result = ServiceNowClient._strip_credentials("https://admin:pw@instance.service-now.com:8443")
+        assert result == "https://instance.service-now.com:8443"
+        assert "admin" not in result
+
+    def test_preserves_path(self):
+        result = ServiceNowClient._strip_credentials("https://admin:pw@instance.service-now.com/api/now")
+        assert result == "https://instance.service-now.com/api/now"

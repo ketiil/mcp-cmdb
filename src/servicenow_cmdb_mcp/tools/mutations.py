@@ -317,7 +317,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         if op.operation != "update":
-            del pending[token]
+            # Don't consume — the token belongs to a different confirm handler.
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -327,8 +327,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         logger.info(
-            "AUDIT confirm_ci_update: table=%s sys_id=%s fields=%s",
-            op.table, op.sys_id, list(op.fields.keys()),
+            "AUDIT confirm_ci_update: user=%s table=%s sys_id=%s fields=%s",
+            client.username if client else "unknown", op.table, op.sys_id, list(op.fields.keys()),
         )
 
         try:
@@ -345,8 +345,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             del pending[token]
 
             logger.info(
-                "AUDIT confirm_ci_update: SUCCESS table=%s sys_id=%s",
-                op.table, op.sys_id,
+                "AUDIT confirm_ci_update: SUCCESS user=%s table=%s sys_id=%s",
+                client.username if client else "unknown", op.table, op.sys_id,
             )
 
             result = _json({
@@ -364,12 +364,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return result
         except ServiceNowError as e:
             logger.error(
-                "AUDIT confirm_ci_update: FAILED table=%s sys_id=%s error=%s",
-                op.table, op.sys_id, e.category,
+                "AUDIT confirm_ci_update: FAILED user=%s table=%s sys_id=%s error=%s",
+                client.username if client else "unknown", op.table, op.sys_id, e.category,
             )
-            # Always consume token on failure — user must preview again to retry.
-            # This is predictable: one token, one attempt, regardless of error type.
-            pending.pop(token, None)
+            # Preserve token for retryable errors (429, 5xx, timeout) so the
+            # agent can retry without re-previewing.  Consume on permanent errors.
+            if not e.retry:
+                pending.pop(token, None)
             return e.to_json()
 
     @mcp.tool(
@@ -530,7 +531,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         if op.operation != "create":
-            del pending[token]
+            # Don't consume — the token belongs to a different confirm handler.
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -540,8 +541,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             })
 
         logger.info(
-            "AUDIT confirm_ci_create: table=%s fields=%s",
-            op.table, list(op.fields.keys()),
+            "AUDIT confirm_ci_create: user=%s table=%s fields=%s",
+            client.username if client else "unknown", op.table, list(op.fields.keys()),
         )
 
         try:
@@ -558,8 +559,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             del pending[token]
 
             logger.info(
-                "AUDIT confirm_ci_create: SUCCESS table=%s sys_id=%s",
-                op.table, created.get("sys_id", ""),
+                "AUDIT confirm_ci_create: SUCCESS user=%s table=%s sys_id=%s",
+                client.username if client else "unknown", op.table, created.get("sys_id", ""),
             )
 
             new_sys_id = created.get("sys_id", "")
@@ -578,9 +579,11 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return result
         except ServiceNowError as e:
             logger.error(
-                "AUDIT confirm_ci_create: FAILED table=%s error=%s",
-                op.table, e.category,
+                "AUDIT confirm_ci_create: FAILED user=%s table=%s error=%s",
+                client.username if client else "unknown", op.table, e.category,
             )
-            # Always consume token on failure — user must preview again to retry.
-            pending.pop(token, None)
+            # Preserve token for retryable errors (429, 5xx, timeout) so the
+            # agent can retry without re-previewing.  Consume on permanent errors.
+            if not e.retry:
+                pending.pop(token, None)
             return e.to_json()

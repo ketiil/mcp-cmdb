@@ -375,10 +375,16 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         max_depth = max(1, min(max_depth, 5))
         visited: set[str] = set()
         traversal_errors: list[str] = []
+        # Mutable node registry so partial trees survive timeout cancellation.
+        # Each node is registered as soon as it is created; child links are
+        # appended in-place, so the root node always reflects whatever was
+        # completed before the deadline.
+        nodes: dict[str, dict[str, Any]] = {}
 
         async def walk(sys_id: str, depth: int) -> dict[str, Any]:
             ci_info = await _resolve_ci(client, sys_id)
             node: dict[str, Any] = {"ci": ci_info, "children": []}
+            nodes[sys_id] = node
 
             if sys_id in visited or depth >= max_depth or len(visited) >= _MAX_TRAVERSAL_NODES:
                 return node
@@ -401,14 +407,19 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
 
         try:
             timed_out = False
+            # Pre-register root node so timeout handler never needs a network call.
+            root_ci = await _resolve_ci(client, ci_sys_id)
+            nodes[ci_sys_id] = {"ci": root_ci, "children": []}
             try:
                 tree = await asyncio.wait_for(walk(ci_sys_id, 0), timeout=_TRAVERSAL_TIMEOUT)
             except asyncio.TimeoutError:
                 timed_out = True
-                # Return whatever partial tree was built before timeout
-                tree = {"ci": await _resolve_ci(client, ci_sys_id), "children": []}
+                # Return the partial tree accumulated before timeout.
+                # The root node was pre-registered so this never fails.
+                tree = nodes[ci_sys_id]
                 traversal_errors.append(
                     f"Traversal timed out after {_TRAVERSAL_TIMEOUT}s. "
+                    "Partial tree returned — some subtrees may be incomplete. "
                     "Try reducing max_depth or limit_per_level."
                 )
 
@@ -730,9 +741,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 cls = ci.get("sys_class_name", "unknown")
                 by_class[cls] = by_class.get(cls, 0) + 1
 
+            traversal_complete = not timed_out and not traversal_errors
             result: dict[str, Any] = {
                 "ci": source_ci,
                 "total_impacted": len(all_impacted),
+                "traversal_complete": traversal_complete,
                 "impacted_by_class": by_class,
                 "impacted_services": impacted_services,
                 "traversal_depth": max_depth,

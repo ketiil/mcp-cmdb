@@ -67,7 +67,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     )
     async def find_orphan_cis(
         ci_class: str = "cmdb_ci",
-        operational_status: str = "",
+        operational_status: Literal["", "1", "2", "3", "4", "5", "6", "7", "8"] = "",
         limit: int = 25,
         scan_offset: int = 0,
     ) -> str:
@@ -363,7 +363,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     async def find_stale_cis(
         ci_class: str = "cmdb_ci",
         days: int = 90,
-        operational_status: str = "1",
+        operational_status: Literal["", "1", "2", "3", "4", "5", "6", "7", "8"] = "1",
         limit: int = 25,
         offset: int = 0,
     ) -> str:

@@ -487,3 +487,25 @@ class TestAnalyzeConfigurables:
         mock_client.get_aggregate.return_value = {"result": "unexpected"}
         result = _parse(await tools["analyze_configurables"](table="cmdb_ci"))
         assert result["business_rules"]["total_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_structured_error_includes_category_and_retry(self, mock_client, tools):
+        """Aggregate errors should propagate error category and retry flag."""
+        from servicenow_cmdb_mcp.errors import RateLimitError
+        mock_client.get_aggregate.side_effect = RateLimitError("Rate limited", retry_after=5)
+        result = _parse(await tools["analyze_configurables"](table="cmdb_ci"))
+        # All categories should have structured error with category and retry
+        for category in ("business_rules", "client_scripts", "flows", "acls"):
+            assert result[category]["total_count"] is None
+            assert result[category]["error"] == "RateLimitError"
+            assert result[category]["retry"] is True
+
+    @pytest.mark.asyncio
+    async def test_permanent_error_not_retryable(self, mock_client, tools):
+        """Non-retryable errors should have retry=False."""
+        from servicenow_cmdb_mcp.errors import SNPermissionError
+        mock_client.get_aggregate.side_effect = SNPermissionError("Denied")
+        result = _parse(await tools["analyze_configurables"](table="cmdb_ci"))
+        for category in ("business_rules", "client_scripts", "flows", "acls"):
+            assert result[category]["error"] == "PermissionError"
+            assert result[category]["retry"] is False

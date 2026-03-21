@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from servicenow_cmdb_mcp.errors import NotFoundError, SNPermissionError
+from servicenow_cmdb_mcp.errors import NotFoundError, RateLimitError, SNPermissionError
 from servicenow_cmdb_mcp.tools._utils import _validate_table_name
 from servicenow_cmdb_mcp.tools.mutations import (
     _BLOCKED_FIELDS,
@@ -342,6 +342,63 @@ class TestConfirmCiUpdate:
         result = _parse(await tools["confirm_ci_update"](token=preview["token"]))
         assert result["error"] is True
 
+    @pytest.mark.asyncio
+    async def test_token_preserved_on_retryable_error(self, mock_client, tools):
+        """Retryable errors (429, 5xx) should preserve token for retry."""
+        preview = _parse(await tools["preview_ci_update"](
+            sys_id=CI_A, table="cmdb_ci",
+            fields={"name": "new-name"},
+        ))
+        token = preview["token"]
+
+        # First attempt: retryable error
+        mock_client.patch.side_effect = RateLimitError("Rate limited", retry_after=5)
+        result = _parse(await tools["confirm_ci_update"](token=token))
+        assert result["error"] is True
+        assert result["retry"] is True
+
+        # Second attempt: succeeds — token was preserved
+        mock_client.patch.side_effect = None
+        mock_client.patch.return_value = {"result": {**_ci_record(), "name": "new-name"}}
+        result2 = _parse(await tools["confirm_ci_update"](token=token))
+        assert result2["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_token_consumed_on_permanent_error(self, mock_client, tools):
+        """Permanent errors (403) should consume token."""
+        preview = _parse(await tools["preview_ci_update"](
+            sys_id=CI_A, table="cmdb_ci",
+            fields={"name": "new-name"},
+        ))
+        token = preview["token"]
+
+        mock_client.patch.side_effect = SNPermissionError("Denied")
+        result = _parse(await tools["confirm_ci_update"](token=token))
+        assert result["error"] is True
+
+        # Token is now consumed — retry should fail
+        mock_client.patch.side_effect = None
+        result2 = _parse(await tools["confirm_ci_update"](token=token))
+        assert result2["error"] is True
+        assert "Invalid or expired" in result2["message"]
+
+    @pytest.mark.asyncio
+    async def test_wrong_operation_type_preserves_token(self, mock_client, tools):
+        """Operation-type mismatch should NOT consume the token."""
+        preview = _parse(await tools["preview_ci_create"](
+            table="cmdb_ci", fields={"name": "new-ci"},
+        ))
+        token = preview["token"]
+
+        # Try with wrong handler — should error but preserve token
+        result = _parse(await tools["confirm_ci_update"](token=token))
+        assert result["error"] is True
+        assert "create" in result["message"]
+
+        # Token should still work with correct handler
+        result2 = _parse(await tools["confirm_ci_create"](token=token))
+        assert result2["success"] is True
+
 
 # ── preview_ci_create ───────────────────────────────────────────────
 
@@ -484,3 +541,39 @@ class TestConfirmCiCreate:
         mock_client.post.side_effect = SNPermissionError("Denied")
         result = _parse(await tools["confirm_ci_create"](token=preview["token"]))
         assert result["error"] is True
+
+    @pytest.mark.asyncio
+    async def test_token_preserved_on_retryable_error(self, mock_client, tools):
+        """Retryable errors (429, 5xx) should preserve token for retry."""
+        preview = _parse(await tools["preview_ci_create"](
+            table="cmdb_ci", fields={"name": "new-ci"},
+        ))
+        token = preview["token"]
+
+        mock_client.post.side_effect = RateLimitError("Rate limited", retry_after=5)
+        result = _parse(await tools["confirm_ci_create"](token=token))
+        assert result["error"] is True
+        assert result["retry"] is True
+
+        # Second attempt succeeds — token was preserved
+        mock_client.post.side_effect = None
+        mock_client.post.return_value = {"result": {**_ci_record(), "sys_id": "new123"}}
+        result2 = _parse(await tools["confirm_ci_create"](token=token))
+        assert result2["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_wrong_operation_type_preserves_token(self, mock_client, tools):
+        """Operation-type mismatch should NOT consume the token."""
+        preview = _parse(await tools["preview_ci_update"](
+            sys_id=CI_A, table="cmdb_ci", fields={"name": "x"},
+        ))
+        token = preview["token"]
+
+        # Wrong handler — should error but preserve
+        result = _parse(await tools["confirm_ci_create"](token=token))
+        assert result["error"] is True
+        assert "update" in result["message"]
+
+        # Token still works with correct handler
+        result2 = _parse(await tools["confirm_ci_update"](token=token))
+        assert result2["success"] is True

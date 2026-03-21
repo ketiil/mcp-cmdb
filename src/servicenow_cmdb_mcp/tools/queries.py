@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import re
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 # Valid operational_status values (string codes used in ServiceNow API)
 VALID_OP_STATUS = {"1", "2", "3", "4", "5", "6", "7", "8"}
+
+# Patterns blocked in raw encoded queries to prevent server-side script injection.
+# ServiceNow evaluates javascript: expressions in queries — block user-supplied ones.
+_DANGEROUS_QUERY_PATTERNS = re.compile(
+    r"javascript:|gs\.(include|sleep|log|print|exec|eval|import)|"
+    r"Packages\.|java\.|eval\(|new\s+Function",
+    re.IGNORECASE,
+)
 
 # Default fields returned for CI list queries
 _CI_LIST_FIELDS = [
@@ -190,7 +199,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
     async def search_cis(
         ci_class: str = "cmdb_ci",
         name_filter: str = "",
-        operational_status: str = "",
+        operational_status: Literal["", "1", "2", "3", "4", "5", "6", "7", "8"] = "",
         os_filter: str = "",
         location: str = "",
         limit: int = 25,
@@ -305,10 +314,13 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         For advanced users who know ServiceNow encoded query syntax. The query is passed
         directly to the Table API's sysparm_query parameter without modification.
 
+        Note: Server-side script expressions (javascript:, gs.*, eval) are blocked
+        for security. Use field-based operators only.
+
         Examples of encoded queries:
         - "nameSTARTSWITHweb^operational_status=1" — operational CIs starting with "web"
         - "sys_class_name=cmdb_ci_linux_server^ip_addressISNOTEMPTY" — Linux servers with IPs
-        - "sys_updated_on<javascript:gs.daysAgo(30)" — CIs not updated in 30 days
+        - "sys_updated_on<2025-01-01" — CIs not updated since a specific date
 
         Args:
             table: ServiceNow table name (e.g. cmdb_ci, cmdb_ci_server, cmdb_ci_win_server).
@@ -329,6 +341,14 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
                 "error": True, "category": "ValidationError",
                 "message": err,
                 "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
+                "retry": False,
+            })
+        if _DANGEROUS_QUERY_PATTERNS.search(encoded_query):
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": "Encoded query contains blocked patterns (javascript:, gs.*, eval, etc.).",
+                "suggestion": "Use only field-based encoded query operators (=, STARTSWITH, IN, <, >, etc.). "
+                              "Server-side script expressions are not allowed in raw queries.",
                 "retry": False,
             })
         limit = _clamp_limit(limit)

@@ -490,6 +490,49 @@ class TestGetImpactSummary:
         assert result["total_impacted"] == 0
         assert result["impacted_services"] == []
         assert result["ci"]["sys_id"] == CI_A
+        assert result["traversal_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_traversal_complete_true_on_success(self, mock_client, tools):
+        """traversal_complete should be True when traversal finishes without errors."""
+        mock_client.get_records.return_value = []
+        mock_client.get_record.return_value = _ci_record(CI_A, "Server-A")
+
+        result = _parse(await tools["get_impact_summary"](CI_A))
+        assert result["traversal_complete"] is True
+        assert "timed_out" not in result
+        assert "is_partial" not in result
+
+    @pytest.mark.asyncio
+    async def test_traversal_complete_false_on_error(self, mock_client, tools):
+        """traversal_complete should be False when traversal encounters errors."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
+        call_count = 0
+        def mock_get_records(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci" and f"parent={CI_A}" in query:
+                return [_rel_record(parent=CI_A, child=CI_B)]
+            if table == "cmdb_rel_ci" and f"parent={CI_B}" in query:
+                raise SNPermissionError("Access denied")
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["get_impact_summary"](CI_A))
+        assert result["traversal_complete"] is False
+        assert result["is_partial"] is True
 
     @pytest.mark.asyncio
     async def test_counts_impacted_by_class(self, mock_client, tools):

@@ -241,6 +241,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         days: int = 7,
         limit: int = 25,
         offset: int = 0,
+        max_error_length: int = 500,
     ) -> str:
         """Get recent transform map errors from import set processing.
 
@@ -253,6 +254,9 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             days: How far back to search in days (1-365, default 7).
             limit: Maximum errors to return (1-1000, default 25).
             offset: Pagination offset.
+            max_error_length: Truncate error_message fields longer than this (default 500).
+                             Set to 0 to return full messages. Truncated messages include
+                             an error_message_length field with the original character count.
 
         Returns:
             JSON object with "count", "days_back", and "transform_errors" list
@@ -299,19 +303,23 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 _safe_total(client, "sys_import_set_row", query),
             )
 
-            errors = [
-                {
+            max_len = max(0, max_error_length)
+            errors: list[dict[str, Any]] = []
+            for r in records:
+                msg = r.get("error_message", "")
+                entry: dict[str, Any] = {
                     "sys_id": r.get("sys_id", ""),
                     "import_set": r.get("sys_import_set", ""),
                     "transform_map": r.get("sys_transform_map", ""),
                     "target_table": r.get("sys_target_table", ""),
                     "target_sys_id": r.get("sys_target_sys_id", ""),
-                    "error_message": r.get("error_message", ""),
+                    "error_message": msg[:max_len] + "…" if max_len and len(msg) > max_len else msg,
                     "status": r.get("status", ""),
                     "sys_created_on": r.get("sys_created_on", ""),
                 }
-                for r in records
-            ]
+                if max_len and len(msg) > max_len:
+                    entry["error_message_length"] = len(msg)
+                errors.append(entry)
 
             result: dict[str, Any] = {
                 "count": len(errors),

@@ -304,6 +304,55 @@ class TestGetDiscoveryErrors:
         assert "DESC" in call_args.kwargs["order_by"]
 
     @pytest.mark.asyncio
+    async def test_message_truncation(self, mock_client, tools):
+        """Long messages should be truncated with length metadata."""
+        long_msg = "x" * 1000
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "level": "Error", "message": long_msg,
+            "source": "10.0.1.1", "cmdb_ci": "", "status": "ds1",
+            "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_discovery_errors"](max_message_length=500))
+        e = result["errors"][0]
+        assert len(e["message"]) == 501  # 500 chars + ellipsis
+        assert e["message"].endswith("\u2026")
+        assert e["message_length"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_no_truncation_when_short(self, mock_client, tools):
+        """Short messages should not be truncated."""
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "level": "Error", "message": "Short error",
+            "source": "10.0.1.1", "cmdb_ci": "", "status": "ds1",
+            "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_discovery_errors"](max_message_length=500))
+        e = result["errors"][0]
+        assert e["message"] == "Short error"
+        assert "message_length" not in e
+
+    @pytest.mark.asyncio
+    async def test_truncation_disabled(self, mock_client, tools):
+        """max_message_length=0 should disable truncation."""
+        long_msg = "x" * 1000
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "level": "Error", "message": long_msg,
+            "source": "10.0.1.1", "cmdb_ci": "", "status": "ds1",
+            "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_discovery_errors"](max_message_length=0))
+        e = result["errors"][0]
+        assert e["message"] == long_msg
+        assert "message_length" not in e
+
+    @pytest.mark.asyncio
+    async def test_all_severities_when_empty_string(self, mock_client, tools):
+        """severity='' should not filter by level."""
+        await tools["get_discovery_errors"](severity="")
+        call_args = mock_client.get_records.call_args
+        assert "level=" not in call_args.kwargs["query"]
+
+    @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):
         from servicenow_cmdb_mcp.errors import SNPermissionError
         mock_client.get_records.side_effect = SNPermissionError("Denied")

@@ -271,6 +271,42 @@ class TestQueryCisRaw:
         ))
         assert result["count"] == 1
 
+    @pytest.mark.asyncio
+    async def test_blocks_javascript_expression(self, tools):
+        result = _parse(await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="sys_updated_on>=javascript:gs.daysAgo(30)",
+        ))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "blocked" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_blocks_gs_eval(self, tools):
+        result = _parse(await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="nameSTARTSWITHtest^gs.eval('1+1')",
+        ))
+        assert result["error"] is True
+        assert "blocked" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_blocks_packages_java(self, tools):
+        result = _parse(await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="Packages.java.lang.Runtime",
+        ))
+        assert result["error"] is True
+
+    @pytest.mark.asyncio
+    async def test_allows_safe_query(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        result = _parse(await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="sys_updated_on<2025-01-01^operational_status=1",
+        ))
+        assert "error" not in result or result.get("error") is not True
+
 
 # ── get_ci_details ──────────────────────────────────────────────────
 

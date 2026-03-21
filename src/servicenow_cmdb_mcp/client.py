@@ -7,6 +7,7 @@ import logging
 import random
 import time
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -56,7 +57,7 @@ class ServiceNowClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._base_url = settings.instance_url.rstrip("/")
+        self._base_url = self._strip_credentials(settings.instance_url.rstrip("/"))
         self._http = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=httpx.Timeout(settings.request_timeout),
@@ -69,10 +70,26 @@ class ServiceNowClient:
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
 
+    @staticmethod
+    def _strip_credentials(url: str) -> str:
+        """Strip any embedded credentials (userinfo) from a URL."""
+        parsed = urlparse(url)
+        if parsed.username or parsed.password:
+            host_port = parsed.hostname or ""
+            if parsed.port:
+                host_port += f":{parsed.port}"
+            parsed = parsed._replace(netloc=host_port)
+        return urlunparse(parsed)
+
     @property
     def base_url(self) -> str:
-        """Return the ServiceNow instance base URL (no trailing slash)."""
+        """Return the ServiceNow instance base URL (no trailing slash, no credentials)."""
         return self._base_url
+
+    @property
+    def username(self) -> str:
+        """Return the authenticated ServiceNow username."""
+        return self._settings.username
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

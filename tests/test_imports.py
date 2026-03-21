@@ -279,6 +279,51 @@ class TestGetTransformErrors:
         assert "DESC" in call_args.kwargs["order_by"]
 
     @pytest.mark.asyncio
+    async def test_error_message_truncation(self, mock_client, tools):
+        """Long error messages should be truncated with length metadata."""
+        long_msg = "x" * 1000
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "sys_import_set": "is1",
+            "sys_transform_map": "tm1", "sys_target_table": "cmdb_ci",
+            "sys_target_sys_id": "", "error_message": long_msg,
+            "status": "error", "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_transform_errors"](max_error_length=500))
+        err = result["transform_errors"][0]
+        assert len(err["error_message"]) == 501  # 500 + ellipsis
+        assert err["error_message"].endswith("\u2026")
+        assert err["error_message_length"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_no_truncation_when_short(self, mock_client, tools):
+        """Short messages should not be truncated."""
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "sys_import_set": "is1",
+            "sys_transform_map": "tm1", "sys_target_table": "cmdb_ci",
+            "sys_target_sys_id": "", "error_message": "Short error",
+            "status": "error", "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_transform_errors"](max_error_length=500))
+        err = result["transform_errors"][0]
+        assert err["error_message"] == "Short error"
+        assert "error_message_length" not in err
+
+    @pytest.mark.asyncio
+    async def test_truncation_disabled(self, mock_client, tools):
+        """max_error_length=0 should disable truncation."""
+        long_msg = "x" * 1000
+        mock_client.get_records.return_value = [{
+            "sys_id": "e1", "sys_import_set": "is1",
+            "sys_transform_map": "tm1", "sys_target_table": "cmdb_ci",
+            "sys_target_sys_id": "", "error_message": long_msg,
+            "status": "error", "sys_created_on": "2026-01-01",
+        }]
+        result = _parse(await tools["get_transform_errors"](max_error_length=0))
+        err = result["transform_errors"][0]
+        assert err["error_message"] == long_msg
+        assert "error_message_length" not in err
+
+    @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):
         from servicenow_cmdb_mcp.errors import SNPermissionError
         mock_client.get_records.side_effect = SNPermissionError("Denied")

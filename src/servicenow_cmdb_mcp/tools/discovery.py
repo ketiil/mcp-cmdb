@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -117,7 +117,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     )
     async def get_discovery_status(
         schedule_name: str = "",
-        state: str = "",
+        state: Literal["", "Starting", "Active", "Completed", "Cancelled", "Error"] = "",
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -223,10 +223,11 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         },
     )
     async def get_discovery_errors(
-        severity: str = "",
+        severity: Literal["", "Error", "Warning", "Info"] = "Error",
         days: int = 7,
         limit: int = 25,
         offset: int = 0,
+        max_message_length: int = 500,
     ) -> str:
         """Get recent Discovery error and warning log entries.
 
@@ -235,11 +236,14 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         discovered or updated correctly.
 
         Args:
-            severity: Filter by severity level. Valid values: "Error", "Warning", "Info".
-                      Defaults to "Error" if not specified.
+            severity: Filter by severity level. Defaults to "Error".
+                      Set to "" (empty string) to return all severity levels.
             days: How far back to search in days (1-365, default 7).
             limit: Maximum log entries to return (1-1000, default 25).
             offset: Pagination offset.
+            max_message_length: Truncate message fields longer than this (default 500).
+                               Set to 0 to return full messages. Truncated messages include
+                               a message_length field with the original character count.
 
         Returns:
             JSON object with "count", "days_back", and "errors" list containing
@@ -265,8 +269,6 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             query_parts = [f"sys_created_on>=javascript:gs.daysAgo({days})"]
             if severity:
                 query_parts.append(f"level={severity}")
-            else:
-                query_parts.append("level=Error")
             query = "^".join(query_parts)
 
             records, total = await asyncio.gather(
@@ -284,18 +286,22 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 _safe_total(client, "discovery_log", query),
             )
 
-            errors = [
-                {
+            max_len = max(0, max_message_length)
+            errors: list[dict[str, Any]] = []
+            for r in records:
+                msg = r.get("message", "")
+                entry: dict[str, Any] = {
                     "sys_id": r.get("sys_id", ""),
                     "level": r.get("level", ""),
-                    "message": r.get("message", ""),
+                    "message": msg[:max_len] + "…" if max_len and len(msg) > max_len else msg,
                     "source": r.get("source", ""),
                     "cmdb_ci": r.get("cmdb_ci", ""),
                     "status": r.get("status", ""),
                     "sys_created_on": r.get("sys_created_on", ""),
                 }
-                for r in records
-            ]
+                if max_len and len(msg) > max_len:
+                    entry["message_length"] = len(msg)
+                errors.append(entry)
 
             result: dict[str, Any] = {
                 "count": len(errors),
