@@ -13,8 +13,11 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
+    _has_more,
     _json,
     _nav_url,
+    _require_client,
+    _safe_total,
     _validate_cmdb_table,
     _validate_sys_id,
     _validate_table_name,
@@ -58,6 +61,8 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             name, applies_to table, identifier fields, priority, and active status.
         """
         logger.info("get_identification_rules: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -77,16 +82,19 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="cmdb_ident_entry",
-                query=query,
-                fields=[
-                    "sys_id", "name", "applies_to", "active",
-                    "identifiers", "priority", "description",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYpriority",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="cmdb_ident_entry",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "applies_to", "active",
+                        "identifiers", "priority", "description",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYpriority",
+                ),
+                _safe_total(client, "cmdb_ident_entry", query),
             )
 
             rules = [
@@ -102,12 +110,16 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "count": len(rules),
                 "table_filter": table or "(all)",
                 "identification_rules": rules,
                 "suggested_next": "Use get_reconciliation_rules(table) to see data refresh rules, or explain_duplicate(sys_id_a, sys_id_b) to compare two CIs against these rules.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(rules), limit)
+            result["next_offset"] = offset + len(rules)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -143,6 +155,8 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             name, applies_to table, source, priority, attributes, and active status.
         """
         logger.info("get_reconciliation_rules: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -162,16 +176,19 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="cmdb_reconciliation_rule",
-                query=query,
-                fields=[
-                    "sys_id", "name", "applies_to", "active",
-                    "source", "priority", "attributes", "description",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYpriority",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="cmdb_reconciliation_rule",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "applies_to", "active",
+                        "source", "priority", "attributes", "description",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYpriority",
+                ),
+                _safe_total(client, "cmdb_reconciliation_rule", query),
             )
 
             rules = [
@@ -188,12 +205,16 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "count": len(rules),
                 "table_filter": table or "(all)",
                 "reconciliation_rules": rules,
                 "suggested_next": "Use get_identification_rules(table) to see matching rules, or find_duplicate_cis(table) to find potential duplicates.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(rules), limit)
+            result["next_offset"] = offset + len(rules)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -230,6 +251,8 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             rules, and a field-by-field comparison showing matches and mismatches.
         """
         logger.info("explain_duplicate: a=%s… b=%s… table=%s", sys_id_a[:8], sys_id_b[:8], table)
+        if err := _require_client(client):
+            return err
 
         if err := _validate_sys_id(sys_id_a):
             return _json({
@@ -354,6 +377,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                     "total_identifier_fields": len(all_ident_fields),
                     "likely_duplicate": len(matching_ident_fields) > 0 and len(mismatched_ident_fields) == 0,
                 },
+                "suggested_next": f"If likely_duplicate=true, use preview_ci_update to correct identifier fields, or review in ServiceNow CI Remediation Workspace. Use get_reconciliation_rules(table='{table}') to check which data source should be authoritative.",
             })
         except ServiceNowError as e:
             return e.to_json()

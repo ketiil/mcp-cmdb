@@ -248,6 +248,11 @@ class ServiceNowClient:
                 else None
             )
             error = error_from_status(response.status_code, error_msg, retry_after)
+
+            # Log permission denials for audit trail
+            if response.status_code == 403:
+                logger.warning("PERMISSION_DENIED path=%s", path)
+
             raise error
 
     @staticmethod

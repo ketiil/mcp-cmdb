@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal
 
@@ -13,12 +14,18 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
+    _extract_agg_count,
+    _has_more,
     _json,
     _nav_url,
+    _require_client,
     _validate_sys_id,
 )
 
 logger = logging.getLogger(__name__)
+
+# Maximum wall-clock seconds for recursive traversals (dependency tree, impact)
+_TRAVERSAL_TIMEOUT = 30.0
 
 # Fields to return for CIs referenced in relationships
 _CI_REF_FIELDS = ["sys_id", "name", "sys_class_name", "operational_status"]
@@ -28,6 +35,30 @@ _REL_FIELDS = ["sys_id", "parent", "child", "type"]
 
 # Maximum nodes to visit in BFS/DFS traversals to prevent unbounded memory
 _MAX_TRAVERSAL_NODES = 500
+
+
+async def _safe_rel_total(
+    client: ServiceNowClient, ci_sys_id: str, direction: str, rel_type_sys_id: str = "",
+) -> int | None:
+    """Count total relationships for a CI via aggregate, returning None on failure."""
+    try:
+        queries: list[str] = []
+        if direction in ("upstream", "both"):
+            q = f"child={ci_sys_id}"
+            if rel_type_sys_id:
+                q += f"^type={rel_type_sys_id}"
+            queries.append(q)
+        if direction in ("downstream", "both"):
+            q = f"parent={ci_sys_id}"
+            if rel_type_sys_id:
+                q += f"^type={rel_type_sys_id}"
+            queries.append(q)
+        agg_results = await asyncio.gather(
+            *(client.get_aggregate(table="cmdb_rel_ci", query=q) for q in queries)
+        )
+        return sum(_extract_agg_count(agg) for agg in agg_results)
+    except ServiceNowError:
+        return None
 
 
 async def _resolve_ci(client: ServiceNowClient, sys_id: str) -> dict[str, str]:
@@ -217,12 +248,14 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         - Upstream: this CI is the CHILD in the relationship (e.g., "Runs on" a server)
         - Downstream: this CI is the PARENT (e.g., a server that other CIs "Run on")
 
-        Prerequisites: Use search_cis to find the CI sys_id first.
+        Prerequisites: Use search_cis to find the CI sys_id first. This tool only accepts
+        sys_id (a 32-character hex identifier), not CI names. To look up a CI by name:
+        search_cis(name_filter="my-server") → use the returned sys_id.
 
         Example: get_ci_relationships(ci_sys_id="abc123...", direction="downstream", limit=10)
 
         Args:
-            ci_sys_id: The sys_id of the CI to get relationships for.
+            ci_sys_id: The 32-character sys_id of the CI (from search_cis or query_cis_raw).
             direction: Which relationships to return: "upstream", "downstream", or "both".
                       Defaults to "both".
             limit: Maximum relationships to return per direction (1-1000, default 25).
@@ -232,6 +265,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             JSON object with "ci_sys_id", "direction", "count", and "relationships" list.
         """
         logger.info("get_ci_relationships: ci=%s direction=%s", ci_sys_id, direction)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -254,16 +289,23 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             })
 
         try:
-            relationships = await _fetch_relationships(
-                client, cache, ci_sys_id, direction, limit=limit, offset=offset,
+            relationships, total = await asyncio.gather(
+                _fetch_relationships(
+                    client, cache, ci_sys_id, direction, limit=limit, offset=offset,
+                ),
+                _safe_rel_total(client, ci_sys_id, direction),
             )
-            return _json({
+            result: dict[str, Any] = {
                 "ci_sys_id": ci_sys_id,
                 "direction": direction,
                 "count": len(relationships),
                 "relationships": relationships,
                 "suggested_next": "Use get_dependency_tree(sys_id) for full dependency chain, or get_impact_summary(sys_id) for service impact.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(relationships), limit)
+            result["next_offset"] = offset + len(relationships)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -287,10 +329,16 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
 
         Prerequisites: Use search_cis to find the root CI sys_id first.
 
-        Example: get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=3)
+        Performance: API calls grow exponentially with max_depth — depth=3 with
+        limit_per_level=10 can issue up to ~111 calls. Start with max_depth=2
+        and increase only if needed. Reduce limit_per_level for wide graphs.
+        A hard 30-second timeout applies; on timeout only the root node is
+        returned (in-progress subtrees are discarded) with timed_out=true.
+
+        Example: get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=2)
 
         Args:
-            ci_sys_id: The sys_id of the starting CI.
+            ci_sys_id: The sys_id of the starting CI (32-character hex string from search_cis).
             direction: Direction to traverse: "upstream" (what this CI depends on) or
                       "downstream" (what depends on this CI). Defaults to "upstream".
             max_depth: How many levels deep to traverse (1-5, default 3). Higher values
@@ -303,6 +351,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             "children" (nested list of related CIs, each with their own "children").
         """
         logger.info("get_dependency_tree: ci=%s direction=%s depth=%d", ci_sys_id, direction, max_depth)
+        if err := _require_client(client):
+            return err
 
         if err := _validate_sys_id(ci_sys_id):
             return _json({
@@ -324,6 +374,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
 
         max_depth = max(1, min(max_depth, 5))
         visited: set[str] = set()
+        traversal_errors: list[str] = []
 
         async def walk(sys_id: str, depth: int) -> dict[str, Any]:
             ci_info = await _resolve_ci(client, sys_id)
@@ -343,19 +394,37 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                         child_node = await walk(child_id, depth + 1)
                         child_node["relationship_type"] = rel["relationship_type"]
                         node["children"].append(child_node)
-            except ServiceNowError:
-                pass  # Partial tree is still useful
+            except ServiceNowError as e:
+                traversal_errors.append(f"Node {sys_id}: {e.message}")
 
             return node
 
         try:
-            tree = await walk(ci_sys_id, 0)
-            return _json({
+            timed_out = False
+            try:
+                tree = await asyncio.wait_for(walk(ci_sys_id, 0), timeout=_TRAVERSAL_TIMEOUT)
+            except asyncio.TimeoutError:
+                timed_out = True
+                # Return whatever partial tree was built before timeout
+                tree = {"ci": await _resolve_ci(client, ci_sys_id), "children": []}
+                traversal_errors.append(
+                    f"Traversal timed out after {_TRAVERSAL_TIMEOUT}s. "
+                    "Try reducing max_depth or limit_per_level."
+                )
+
+            result: dict[str, Any] = {
                 "direction": direction,
                 "max_depth": max_depth,
+                "nodes_visited": len(visited),
                 "tree": tree,
                 "suggested_next": "Use get_impact_summary(sys_id) for service impact, or get_ci_details(sys_id) to inspect a specific node.",
-            })
+            }
+            if timed_out:
+                result["timed_out"] = True
+            if traversal_errors:
+                result["is_partial"] = True
+                result["traversal_errors"] = traversal_errors
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -368,6 +437,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
     )
     async def list_relationship_types(
         limit: int = 50,
+        offset: int = 0,
     ) -> str:
         """List all relationship types available in the ServiceNow instance.
 
@@ -377,6 +447,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
 
         Args:
             limit: Maximum number of relationship types to return (default 50).
+            offset: Pagination offset for retrieving subsequent pages of results.
 
         Returns:
             JSON object with "count" and "relationship_types" list containing
@@ -385,13 +456,19 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         Typical workflow: list_relationship_types → find_related_cis(ci_sys_id, rel_type=sys_id)
         """
         logger.info("list_relationship_types")
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
+        offset = _clamp_offset(offset)
         cache_key = "rel_types:all"
         cached = cache.get(cache_key)
         if cached is not None:
-            sliced = cached[:limit]
+            sliced = cached[offset:offset + limit]
             return _json({
                 "count": len(sliced),
+                "total_count": len(cached),
+                "has_more": offset + len(sliced) < len(cached),
+                "next_offset": offset + len(sliced),
                 "relationship_types": sliced,
                 "cached": True,
                 "suggested_next": "Use find_related_cis(ci_sys_id, rel_type=<type_sys_id>) to find CIs with a specific relationship type.",
@@ -414,13 +491,23 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 for r in records
             ]
             cache.set(cache_key, rel_types)
-            sliced = rel_types[:limit]
-            return _json({
+            sliced = rel_types[offset:offset + limit]
+            result: dict[str, Any] = {
                 "count": len(sliced),
+                "total_count": len(rel_types),
+                "has_more": offset + len(sliced) < len(rel_types),
+                "next_offset": offset + len(sliced),
                 "relationship_types": sliced,
                 "cached": False,
                 "suggested_next": "Use find_related_cis(ci_sys_id, rel_type=<type_sys_id>) to find CIs with a specific relationship type.",
-            })
+            }
+            if len(records) == 200:
+                result["truncated"] = True
+                result["truncation_warning"] = (
+                    "Results capped at 200 relationship types. "
+                    "The instance may have more types than shown."
+                )
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -456,6 +543,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             "relationships" list.
         """
         logger.info("find_related_cis: ci=%s type=%s direction=%s", ci_sys_id, rel_type, direction)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -507,19 +596,26 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                     })
                 rel_type_sys_id = type_records[0].get("sys_id", "")
 
-            relationships = await _fetch_relationships(
-                client, cache, ci_sys_id, direction,
-                rel_type_sys_id=rel_type_sys_id,
-                limit=limit, offset=offset,
+            relationships, total = await asyncio.gather(
+                _fetch_relationships(
+                    client, cache, ci_sys_id, direction,
+                    rel_type_sys_id=rel_type_sys_id,
+                    limit=limit, offset=offset,
+                ),
+                _safe_rel_total(client, ci_sys_id, direction, rel_type_sys_id),
             )
-            return _json({
+            result: dict[str, Any] = {
                 "ci_sys_id": ci_sys_id,
                 "rel_type": rel_type,
                 "direction": direction,
                 "count": len(relationships),
                 "relationships": relationships,
                 "suggested_next": "Use get_ci_details(sys_id) to inspect a related CI, or get_dependency_tree(sys_id) for the full chain.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(relationships), limit)
+            result["next_offset"] = offset + len(relationships)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -539,15 +635,22 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         Traverses downstream relationships (CIs that depend on this CI) up to the
         specified depth, then categorizes the impacted CIs by class. Focuses on
         business-relevant classes: business applications, services, and application
-        clusters.
+        clusters. Also useful for blast radius analysis, change risk assessment,
+        and understanding service dependencies before scheduled maintenance.
 
         Use this tool for change impact assessment — understanding what would be
         affected if this CI goes down.
 
         Prerequisites: Use search_cis to find the CI sys_id first.
 
+        Performance: Traversal can issue many API calls for deeply connected CIs.
+        Consider using max_depth=2 for initial assessment, then increasing if
+        needed. A hard 30-second timeout applies; on timeout, impact counts
+        reflect only what was traversed before the deadline (timed_out=true).
+
         Args:
-            ci_sys_id: The sys_id of the CI to assess impact for.
+            ci_sys_id: The sys_id of the CI to assess impact for (32-character hex string
+                      from search_cis).
             max_depth: How deep to traverse downstream dependencies (1-5, default 3).
 
         Returns:
@@ -556,6 +659,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             (list of business apps/services found in the tree).
         """
         logger.info("get_impact_summary: ci=%s depth=%d", ci_sys_id, max_depth)
+        if err := _require_client(client):
+            return err
 
         if err := _validate_sys_id(ci_sys_id):
             return _json({
@@ -583,6 +688,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         seen_impacted: set[str] = {ci_sys_id}  # Exclude root CI from its own impact list
         all_impacted: list[dict[str, str]] = []
         impacted_services: list[dict[str, str]] = []
+        traversal_errors: list[str] = []
 
         async def collect(sys_id: str, depth: int) -> None:
             if depth >= max_depth or sys_id in visited or len(visited) >= _MAX_TRAVERSAL_NODES:
@@ -603,12 +709,20 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                             impacted_services.append(related)
                     if related_id not in visited:
                         await collect(related_id, depth + 1)
-            except ServiceNowError:
-                pass
+            except ServiceNowError as e:
+                traversal_errors.append(f"Node {sys_id}: {e.message}")
 
         try:
             source_ci = await _resolve_ci(client, ci_sys_id)
-            await collect(ci_sys_id, 0)
+            timed_out = False
+            try:
+                await asyncio.wait_for(collect(ci_sys_id, 0), timeout=_TRAVERSAL_TIMEOUT)
+            except asyncio.TimeoutError:
+                timed_out = True
+                traversal_errors.append(
+                    f"Traversal timed out after {_TRAVERSAL_TIMEOUT}s. "
+                    "Try reducing max_depth."
+                )
 
             # Group impacted CIs by class
             by_class: dict[str, int] = {}
@@ -616,13 +730,20 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
                 cls = ci.get("sys_class_name", "unknown")
                 by_class[cls] = by_class.get(cls, 0) + 1
 
-            return _json({
+            result: dict[str, Any] = {
                 "ci": source_ci,
                 "total_impacted": len(all_impacted),
                 "impacted_by_class": by_class,
                 "impacted_services": impacted_services,
                 "traversal_depth": max_depth,
+                "nodes_visited": len(visited),
                 "suggested_next": "Use get_ci_details(sys_id) to inspect impacted CIs, or get_dependency_tree(sys_id) to trace the full chain.",
-            })
+            }
+            if timed_out:
+                result["timed_out"] = True
+            if traversal_errors:
+                result["is_partial"] = True
+                result["traversal_errors"] = traversal_errors
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()

@@ -42,6 +42,7 @@ def mock_client() -> AsyncMock:
     client = AsyncMock()
     client.get_records = AsyncMock(return_value=[])
     client.get_record = AsyncMock(return_value=_ci_record(CI_A))
+    client.get_aggregate = AsyncMock(return_value={"result": {"stats": {"count": "0"}}})
     return client
 
 
@@ -94,6 +95,13 @@ class TestGetIdentificationRules:
         assert result["count"] == 0
         assert result["identification_rules"] == []
         assert result["table_filter"] == "(all)"
+
+    @pytest.mark.asyncio
+    async def test_pagination_signals(self, mock_client, tools):
+        result = _parse(await tools["get_identification_rules"]())
+        assert result["total_count"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] == 0
 
     @pytest.mark.asyncio
     async def test_returns_rules(self, mock_client, tools):

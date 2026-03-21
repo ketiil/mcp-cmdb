@@ -15,8 +15,11 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _extract_agg_count,
+    _has_more,
     _json,
     _nav_url,
+    _require_client,
+    _safe_total,
     _validate_cmdb_table,
     _validate_sys_id,
     _validate_table_name,
@@ -24,15 +27,8 @@ from servicenow_cmdb_mcp.tools._utils import (
 
 logger = logging.getLogger(__name__)
 
-
-async def _safe_total(client: ServiceNowClient, table: str, query: str) -> int | None:
-    """Get total record count via aggregate, returning None on failure."""
-    try:
-        agg = await client.get_aggregate(table=table, query=query)
-        return _extract_agg_count(agg)
-    except ServiceNowError:
-        return None
-
+# Valid operational_status values (string codes used in ServiceNow API)
+VALID_OP_STATUS = {"1", "2", "3", "4", "5", "6", "7", "8"}
 
 # Default fields returned for CI list queries
 _CI_LIST_FIELDS = [
@@ -214,8 +210,10 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             ci_class: CMDB table/class to query (e.g. cmdb_ci_server, cmdb_ci_linux_server).
                       Defaults to cmdb_ci (all CI types).
             name_filter: Filter CIs whose name starts with this value. Leave empty for no name filter.
-            operational_status: Filter by operational status value. Common values:
-                              "1" = Operational, "2" = Non-Operational, "6" = Retired.
+            operational_status: Filter by operational status numeric code. Valid values:
+                              "1" = Operational, "2" = Non-Operational, "3" = Repair in Progress,
+                              "4" = DR Standby, "5" = Ready, "6" = Retired,
+                              "7" = Pipeline, "8" = Catalog.
             os_filter: Filter by operating system (STARTSWITH match on the os field).
             location: Filter by location display value (STARTSWITH match).
             limit: Maximum number of results to return (1-1000, default 25).
@@ -227,6 +225,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("search_cis: class=%s name=%s", ci_class, name_filter)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -236,6 +236,15 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             })
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
+        if operational_status and operational_status not in VALID_OP_STATUS:
+            return _json({
+                "error": True, "category": "ValidationError",
+                "message": f"Invalid operational_status '{operational_status}'. "
+                           "Valid values: 1=Operational, 2=Non-Operational, 3=Repair in Progress, "
+                           "4=DR Standby, 5=Ready, 6=Retired, 7=Pipeline, 8=Catalog.",
+                "suggestion": "Use a numeric code from 1-8.",
+                "retry": False,
+            })
         query_parts: list[str] = []
         if name_filter:
             query_parts.append(f"nameSTARTSWITH{name_filter}")
@@ -270,10 +279,9 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
                 "records": records,
                 "suggested_next": "Use get_ci_details(sys_id) for full record, get_ci_relationships(sys_id) for dependencies, or count_cis for totals.",
             }
-            if total is not None:
-                result["total_count"] = total
-                result["has_more"] = offset + len(records) < total
-                result["next_offset"] = offset + len(records)
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(records), limit)
+            result["next_offset"] = offset + len(records)
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -314,6 +322,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
         """
         logger.info("query_cis_raw: table=%s query=%s", table, encoded_query)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -346,10 +356,9 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
                 "records": records,
                 "suggested_next": "Use get_ci_details(sys_id) for full record, or get_ci_relationships(sys_id) for dependencies.",
             }
-            if total is not None:
-                result["total_count"] = total
-                result["has_more"] = offset + len(records) < total
-                result["next_offset"] = offset + len(records)
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(records), limit)
+            result["next_offset"] = offset + len(records)
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -373,9 +382,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         a specific CI, such as after finding it via search_cis.
 
         Prerequisites: Use search_cis or query_cis_raw to find the sys_id first.
+        This tool only accepts sys_id (a 32-character hex identifier), not CI names.
+        To look up a CI by name: search_cis(name_filter="my-server") → use the returned sys_id.
 
         Args:
-            sys_id: The sys_id of the CI record to retrieve.
+            sys_id: The 32-character sys_id of the CI record (from search_cis or query_cis_raw).
             table: The CMDB table the CI belongs to (e.g. cmdb_ci_server). Defaults to cmdb_ci.
                    Using the specific class table is more efficient and returns class-specific fields.
             fields: Specific fields to return. If omitted, returns a broad default set including
@@ -388,6 +399,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             JSON object with the CI record, or an error if not found.
         """
         logger.info("get_ci_details: sys_id=%s table=%s", sys_id, table)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -486,6 +499,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             counts broken down by each distinct value of that field.
         """
         logger.info("count_cis: table=%s query=%s group_by=%s", table, encoded_query, group_by)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(table):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -495,12 +510,46 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             })
 
         try:
-            result = await client.get_aggregate(
+            raw = await client.get_aggregate(
                 table=table,
                 query=encoded_query,
                 group_by=group_by,
             )
-            return _json(result.get("result", result))
+            total = _extract_agg_count(raw)
+
+            # "total" (not "total_count") because this IS the count tool —
+            # the number is the primary result, not pagination metadata.
+            result: dict[str, Any] = {
+                "table": table,
+                "total": total,
+            }
+
+            if group_by:
+                # Parse grouped results from the Aggregate API response
+                raw_result = raw.get("result", raw)
+                groups: list[dict[str, Any]] = []
+                if isinstance(raw_result, list):
+                    for entry in raw_result:
+                        group_value = ""
+                        gb_fields = entry.get("groupby_fields", [])
+                        if gb_fields and isinstance(gb_fields, list):
+                            group_value = gb_fields[0].get("value", "")
+                        try:
+                            count = int(entry.get("stats", {}).get("count", 0))
+                        except (ValueError, TypeError):
+                            count = 0
+                        groups.append({"value": group_value, "count": count})
+                result["group_by"] = group_by
+                result["groups"] = groups
+                # Grouped responses don't have a top-level stats.count —
+                # recompute total from individual group counts.
+                result["total"] = sum(g["count"] for g in groups)
+
+            result["suggested_next"] = (
+                f"Use search_cis(ci_class='{table}') to retrieve the matching records, "
+                "or query_cis_raw for complex filters."
+            )
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -514,6 +563,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
     async def list_ci_classes(
         parent_class: str = "cmdb_ci",
         limit: int = 100,
+        offset: int = 0,
     ) -> str:
         """List available CMDB classes from the Data Model Navigator.
 
@@ -527,19 +577,29 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             parent_class: Parent class to list children of. Defaults to cmdb_ci (all CMDB classes).
                          Use a more specific parent like cmdb_ci_server to see only server subclasses.
             limit: Maximum number of classes to return (default 100).
+            offset: Pagination offset for retrieving subsequent pages of results.
 
         Returns:
             JSON object with "count" and "classes" (list of class dicts with name, label,
             parent class, and whether the class has children).
+
+        Note: offset-based pagination may shift if classes are added or removed between
+        calls. For stable enumeration, fetch all classes in a single call with a higher limit.
         """
         logger.info("list_ci_classes: parent=%s", parent_class)
+        if err := _require_client(client):
+            return err
+        offset = _clamp_offset(offset)
         cache_key = f"ci_classes:{parent_class}"
         cached = cache.get(cache_key)
         if cached is not None:
-            classes = cached[:limit]
+            sliced = cached[offset:offset + limit]
             return _json({
-                "count": len(classes),
-                "classes": classes,
+                "count": len(sliced),
+                "total_count": len(cached),
+                "has_more": offset + len(sliced) < len(cached),
+                "next_offset": offset + len(sliced),
+                "classes": sliced,
                 "cached": True,
                 "suggested_next": "Use describe_ci_class(class_name) for field definitions.",
             })
@@ -562,13 +622,23 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
                 for r in records
             ]
             cache.set(cache_key, classes)
-            sliced = classes[:limit]
-            return _json({
+            sliced = classes[offset:offset + limit]
+            result: dict[str, Any] = {
                 "count": len(sliced),
+                "total_count": len(classes),
+                "has_more": offset + len(sliced) < len(classes),
+                "next_offset": offset + len(sliced),
                 "classes": sliced,
                 "cached": False,
                 "suggested_next": "Use describe_ci_class(class_name) for field definitions.",
-            })
+            }
+            if len(records) == 500:
+                result["truncated"] = True
+                result["truncation_warning"] = (
+                    "Results capped at 500 classes. Use a more specific parent_class "
+                    "(e.g. cmdb_ci_server) to narrow results."
+                )
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -581,6 +651,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
     )
     async def describe_ci_class(
         class_name: str,
+        summary: bool = True,
     ) -> str:
         """Get field definitions, descriptions, and suggested relationships for a CMDB class.
 
@@ -595,17 +666,38 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
 
         Args:
             class_name: The CMDB class name to describe (e.g. cmdb_ci_server, cmdb_ci_linux_server).
+            summary: If True (default), return only field_count, mandatory_fields (names only),
+                    and suggested_relationships — much lighter for initial exploration. Set False
+                    to include the full fields list with all metadata.
 
         Returns:
-            JSON object with "class_name", "fields" (list of field definitions with name, label,
-            type, max_length, mandatory flag, and defining class), and "suggested_relationships"
-            (list of relationship types suggested for this class).
+            JSON object with "class_name", "field_count", and either a summary or the full
+            "fields" list, plus "suggested_relationships".
         """
-        logger.info("describe_ci_class: class=%s", class_name)
+        logger.info("describe_ci_class: class=%s summary=%s", class_name, summary)
+        if err := _require_client(client):
+            return err
 
         try:
-            result = await fetch_class_description(client, cache, class_name)
-            return _json({**result, "suggested_next": f"Use search_cis(ci_class='{class_name}') to query CIs of this class."})
+            full = await fetch_class_description(client, cache, class_name)
+            if summary:
+                mandatory = [
+                    str(f["name"]) for f in full.get("fields", []) if f.get("mandatory")
+                ]
+                return _json({
+                    "class_name": full["class_name"],
+                    "field_count": full["field_count"],
+                    "mandatory_fields": mandatory,
+                    "suggested_relationships": full.get("suggested_relationships", []),
+                    "suggested_next": f"Use describe_ci_class(class_name='{class_name}', summary=False) for full field definitions, or search_cis(ci_class='{class_name}') to query CIs.",
+                })
+            # Strip empty string values from field dicts to save tokens
+            compact_fields = [
+                {k: v for k, v in f.items() if v != ""}
+                for f in full.get("fields", [])
+            ]
+            compact = {**full, "fields": compact_fields}
+            return _json({**compact, "suggested_next": f"Use search_cis(ci_class='{class_name}') to query CIs of this class."})
         except ServiceNowError as e:
             return e.to_json()
 
@@ -618,6 +710,8 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
     )
     async def suggest_table(
         description: str,
+        limit: int = 10,
+        offset: int = 0,
     ) -> str:
         """Suggest the best CMDB table to query based on a natural language description.
 
@@ -629,16 +723,26 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
         Use this tool when you're unsure which CMDB table to query for a particular type
         of configuration item.
 
+        Each suggestion includes a confidence score (0-100) indicating how well it matches
+        the description. When a single result clearly dominates, it is marked as best_match.
+
         Args:
             description: Natural language description of what you're looking for.
                         Examples: "linux servers", "network switches", "web applications",
                         "database instances", "storage devices", "virtual machines".
+            limit: Maximum number of suggestions to return (1-1000, default 10).
+            offset: Pagination offset for retrieving subsequent pages of suggestions.
 
         Returns:
             JSON object with "suggestions" — a ranked list of matching CMDB tables with
-            their name, label, and description. The first result is the best match.
+            their name, label, confidence score, and pagination metadata.
         """
         logger.info("suggest_table: description=%s", description)
+        if err := _require_client(client):
+            return err
+
+        limit = _clamp_limit(limit)
+        offset = _clamp_offset(offset)
 
         # Extract keywords from the description for searching
         keywords = description.lower().split()
@@ -684,24 +788,46 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             for cls in all_classes:
                 name = cls["table"].lower()
                 label = cls["label"].lower()
-                score = sum(1 for kw in filtered_keywords if kw in name or kw in label)
-                if score > 0:
-                    scored.append((score, cls))
+                raw_score = sum(1 for kw in filtered_keywords if kw in name or kw in label)
+                if raw_score > 0:
+                    scored.append((raw_score, cls))
 
             scored.sort(key=lambda x: x[0], reverse=True)
-            suggestions = [item for _, item in scored[:10]]
 
-            if not suggestions:
+            # Normalize scores to 0-100 confidence and annotate each suggestion
+            keyword_count = len(filtered_keywords)
+            all_suggestions: list[dict[str, Any]] = []
+            for raw_score, cls in scored:
+                confidence = int(100 * raw_score / keyword_count)
+                suggestion = {**cls, "confidence": confidence}
+                all_suggestions.append(suggestion)
+
+            if not all_suggestions:
                 return _json({
                     "suggestions": [],
                     "message": f"No CMDB tables found matching '{description}'. "
                     "Try broader terms or use list_ci_classes to browse available classes.",
                 })
 
+            # Mark best_match when the top result clearly dominates
+            if len(all_suggestions) >= 2:
+                top_conf = all_suggestions[0]["confidence"]
+                second_conf = all_suggestions[1]["confidence"]
+                if top_conf >= 80 and (top_conf - second_conf) >= 20:
+                    all_suggestions[0]["best_match"] = True
+            elif all_suggestions[0]["confidence"] >= 80:
+                all_suggestions[0]["best_match"] = True
+
+            total_count = len(all_suggestions)
+            sliced = all_suggestions[offset:offset + limit]
+
             return _json({
                 "query": description,
-                "suggestion_count": len(suggestions),
-                "suggestions": suggestions,
+                "suggestion_count": len(sliced),
+                "total_count": total_count,
+                "has_more": offset + len(sliced) < total_count,
+                "next_offset": offset + len(sliced),
+                "suggestions": sliced,
             })
         except ServiceNowError as e:
             return e.to_json()

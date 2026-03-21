@@ -66,6 +66,7 @@ def mock_client() -> AsyncMock:
     client = AsyncMock()
     client.get_records = AsyncMock(return_value=[])
     client.get_record = AsyncMock(return_value=None)
+    client.get_aggregate = AsyncMock(return_value={"result": {"stats": {"count": "0"}}})
     return client
 
 
@@ -219,6 +220,14 @@ class TestGetCiRelationships:
         assert result["relationships"] == []
 
     @pytest.mark.asyncio
+    async def test_pagination_signals(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        result = _parse(await tools["get_ci_relationships"](CI_A))
+        assert result["total_count"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] == 0
+
+    @pytest.mark.asyncio
     async def test_service_now_error_returns_structured_error(self, mock_client, tools):
         mock_client.get_records.side_effect = SNPermissionError("Access denied")
         result = _parse(await tools["get_ci_relationships"](CI_A))
@@ -357,6 +366,30 @@ class TestListRelationshipTypes:
         ]
         result = _parse(await tools["list_relationship_types"](limit=3))
         assert result["count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_with_offset(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            _rel_type_record(sys_id=f"type{i}", name=f"Type {i}")
+            for i in range(10)
+        ]
+        result = _parse(await tools["list_relationship_types"](limit=3, offset=2))
+        assert result["count"] == 3
+        assert result["relationship_types"][0]["name"] == "Type 2"
+        assert result["has_more"] is True
+        assert result["next_offset"] == 5
+        assert result["total_count"] == 10
+
+    @pytest.mark.asyncio
+    async def test_offset_beyond_results(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            _rel_type_record(sys_id="type1", name="Runs on::Runs"),
+        ]
+        result = _parse(await tools["list_relationship_types"](offset=50))
+        assert result["count"] == 0
+        assert result["relationship_types"] == []
+        assert result["has_more"] is False
+        assert result["total_count"] == 1
 
     @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):

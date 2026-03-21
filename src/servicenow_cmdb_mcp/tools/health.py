@@ -17,6 +17,7 @@ from servicenow_cmdb_mcp.tools._utils import (
     _extract_agg_count,
     _json,
     _nav_url,
+    _require_client,
     _validate_cmdb_table,
 )
 
@@ -73,12 +74,18 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         """Find CIs that have no relationships in cmdb_rel_ci.
 
         Orphan CIs are configuration items with zero upstream or downstream
-        relationships. These often indicate incomplete discovery, manual entries
-        that were never linked, or leftover records from decommissioned infrastructure.
+        relationships (also called unlinked, isolated, or disconnected CIs).
+        These often indicate incomplete discovery, manual entries that were
+        never linked, or leftover records from decommissioned infrastructure.
 
-        Scans a batch of CIs and checks each against cmdb_rel_ci using the
-        Aggregate API. Results may be partial if the orphan ratio is low — use
+        Scans a batch of CIs and checks each against cmdb_rel_ci using IN-batch
+        queries. Results may be partial if the orphan ratio is low — use
         scan_offset to continue scanning from where the previous call left off.
+
+        Performance: This tool issues multiple API calls per batch (fetches CIs,
+        then checks parent and child relationships for batches of up to 100 CIs).
+        Use cmdb_health_summary for a quick count without record-level detail.
+        Narrow scope with ci_class or operational_status to reduce scan cost.
 
         Args:
             ci_class: CMDB table to search for orphans (e.g. cmdb_ci_server).
@@ -90,9 +97,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
 
         Returns:
             JSON object with "ci_class", "count", "orphan_cis" list,
-            "total_scanned" (CIs checked), and "next_offset" (for continuation).
+            "total_scanned" (CIs checked), "has_more", and "next_offset" (for continuation).
         """
         logger.info("find_orphan_cis: class=%s", ci_class)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -124,29 +133,45 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             # instead of one aggregate call per CI (N+1 → ~2 calls per batch of 100)
             sys_ids = [r.get("sys_id", "") for r in records if r.get("sys_id")]
             has_relationships: set[str] = set()
+            is_partial = False
+            partial_warnings: list[str] = []
 
             batch_size = 100
             for i in range(0, len(sys_ids), batch_size):
                 batch = sys_ids[i:i + batch_size]
                 batch_str = ",".join(batch)
                 # Check as parent
-                parent_rels = await client.get_records(
-                    table="cmdb_rel_ci",
-                    query=f"parentIN{batch_str}",
-                    fields=["parent"],
-                    limit=_MAX_LIMIT,
-                )
-                for rel in parent_rels:
-                    has_relationships.add(resolve_ref(rel.get("parent", "")))
+                try:
+                    parent_rels = await client.get_records(
+                        table="cmdb_rel_ci",
+                        query=f"parentIN{batch_str}",
+                        fields=["parent"],
+                        limit=_MAX_LIMIT,
+                    )
+                    for rel in parent_rels:
+                        has_relationships.add(resolve_ref(rel.get("parent", "")))
+                except ServiceNowError as exc:
+                    is_partial = True
+                    partial_warnings.append(
+                        f"Parent relationship check failed for batch at offset {i}: {exc.message}"
+                    )
+                    logger.warning("find_orphan_cis: parent batch check failed: %s", exc.message)
                 # Check as child
-                child_rels = await client.get_records(
-                    table="cmdb_rel_ci",
-                    query=f"childIN{batch_str}",
-                    fields=["child"],
-                    limit=_MAX_LIMIT,
-                )
-                for rel in child_rels:
-                    has_relationships.add(resolve_ref(rel.get("child", "")))
+                try:
+                    child_rels = await client.get_records(
+                        table="cmdb_rel_ci",
+                        query=f"childIN{batch_str}",
+                        fields=["child"],
+                        limit=_MAX_LIMIT,
+                    )
+                    for rel in child_rels:
+                        has_relationships.add(resolve_ref(rel.get("child", "")))
+                except ServiceNowError as exc:
+                    is_partial = True
+                    partial_warnings.append(
+                        f"Child relationship check failed for batch at offset {i}: {exc.message}"
+                    )
+                    logger.warning("find_orphan_cis: child batch check failed: %s", exc.message)
 
             # Filter to orphans (CIs with no relationships)
             orphans: list[dict[str, Any]] = []
@@ -165,15 +190,31 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             has_unscanned = scanned < len(records)
             fetched_full_batch = len(records) == fetch_limit
 
-            return _json({
+            next_offset = scan_offset + scanned
+            has_more = has_unscanned or fetched_full_batch
+            suggested = "Use get_ci_details(sys_id) to inspect specific orphans."
+            if has_more:
+                suggested += (
+                    f" To continue scanning: find_orphan_cis("
+                    f"ci_class=\"{ci_class}\", scan_offset={next_offset})"
+                )
+            result_data: dict[str, Any] = {
                 "ci_class": ci_class,
                 "count": len(orphans),
                 "orphan_cis": orphans,
                 "total_scanned": scanned,
-                "has_more": has_unscanned or fetched_full_batch,
-                "next_offset": scan_offset + scanned,
-                "suggested_next": "Use get_ci_details(sys_id) to inspect specific orphans.",
-            })
+                "has_more": has_more,
+                "next_offset": next_offset,
+                "suggested_next": suggested,
+            }
+            if is_partial:
+                result_data["is_partial"] = True
+                result_data["partial_warning"] = (
+                    "Some relationship checks failed; orphan list may include CIs "
+                    "that actually have relationships. Details: "
+                    + "; ".join(partial_warnings)
+                )
+            return _json(result_data)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -214,6 +255,8 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             each with the shared value and matching CIs).
         """
         logger.info("find_duplicate_cis: class=%s field=%s", ci_class, match_field)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -346,6 +389,8 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             sys_updated_on ascending (most stale first).
         """
         logger.info("find_stale_cis: class=%s days=%d", ci_class, days)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",
@@ -426,6 +471,8 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "stale_count", "missing_name_count", and "by_discovery_source".
         """
         logger.info("cmdb_health_summary: class=%s stale_days=%d", ci_class, stale_days)
+        if err := _require_client(client):
+            return err
         if err := _validate_cmdb_table(ci_class):
             return _json({
                 "error": True, "category": "ValidationError",

@@ -14,7 +14,10 @@ from servicenow_cmdb_mcp.redaction import redact_credentials
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
+    _has_more,
     _json,
+    _require_client,
+    _safe_total,
     _validate_table_name,
 )
 
@@ -43,6 +46,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     async def get_business_rules(
         table: str,
         active_only: bool = True,
+        include_scripts: bool = False,
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -54,15 +58,19 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         Args:
             table: The CMDB table to inspect (e.g. cmdb_ci_server, cmdb_ci).
             active_only: If True, return only active rules. Defaults to True.
+            include_scripts: If True, include full (redacted) script bodies. Defaults to
+                           False for token efficiency — set True when you need to review logic.
             limit: Maximum rules to return (1-1000, default 25).
             offset: Pagination offset.
 
         Returns:
-            JSON object with "table", "count", and "business_rules" list containing
-            name, when (before/after/async), operation (insert/update/delete/query),
-            order, condition, and redacted script body.
+            JSON object with "table", "count", "total_count", "has_more", "next_offset",
+            and "business_rules" list containing name, when, operations, order, condition,
+            and optionally the redacted script body.
         """
         logger.info("get_business_rules: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -79,17 +87,20 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_script",
-                query=query,
-                fields=[
-                    "sys_id", "name", "collection", "active",
-                    "when", "action_insert", "action_update", "action_delete", "action_query",
-                    "order", "condition", "script",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYorder",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_script",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "collection", "active",
+                        "when", "action_insert", "action_update", "action_delete", "action_query",
+                        "order", "condition", "script",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYorder",
+                ),
+                _safe_total(client, "sys_script", query),
             )
 
             rules = []
@@ -104,8 +115,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 if r.get("action_query") == "true":
                     operations.append("query")
 
-                redacted = _redact_script_fields(r, ["script"])
-                rules.append({
+                rule: dict[str, Any] = {
                     "sys_id": r.get("sys_id", ""),
                     "name": r.get("name", ""),
                     "active": r.get("active", ""),
@@ -113,14 +123,22 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                     "operations": operations,
                     "order": r.get("order", ""),
                     "condition": r.get("condition", ""),
-                    "script": redacted.get("script", ""),
-                })
+                }
+                if include_scripts:
+                    redacted = _redact_script_fields(r, ["script"])
+                    rule["script"] = redacted.get("script", "")
+                rules.append(rule)
 
-            return _json({
+            result: dict[str, Any] = {
                 "table": table,
                 "count": len(rules),
                 "business_rules": rules,
-            })
+                "suggested_next": f"Use get_client_scripts(table='{table}') for UI-side scripts, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full summary.",
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(rules), limit)
+            result["next_offset"] = offset + len(rules)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -134,6 +152,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     async def get_client_scripts(
         table: str,
         active_only: bool = True,
+        include_scripts: bool = False,
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -145,14 +164,19 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         Args:
             table: The CMDB table to inspect (e.g. cmdb_ci_server).
             active_only: If True, return only active scripts. Defaults to True.
+            include_scripts: If True, include full (redacted) script bodies. Defaults to
+                           False for token efficiency — set True when you need to review logic.
             limit: Maximum scripts to return (1-1000, default 25).
             offset: Pagination offset.
 
         Returns:
-            JSON object with "table", "count", and "client_scripts" list containing
-            name, type, field_name, and redacted script body.
+            JSON object with "table", "count", "total_count", "has_more", "next_offset",
+            and "client_scripts" list containing name, type, field_name, and optionally
+            the redacted script body.
         """
         logger.info("get_client_scripts: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -169,35 +193,45 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_script_client",
-                query=query,
-                fields=[
-                    "sys_id", "name", "table", "active", "type",
-                    "field", "script",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYname",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_script_client",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "table", "active", "type",
+                        "field", "script",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYname",
+                ),
+                _safe_total(client, "sys_script_client", query),
             )
 
             scripts = []
             for r in records:
-                redacted = _redact_script_fields(r, ["script"])
-                scripts.append({
+                entry: dict[str, Any] = {
                     "sys_id": r.get("sys_id", ""),
                     "name": r.get("name", ""),
                     "active": r.get("active", ""),
                     "type": r.get("type", ""),
                     "field_name": r.get("field", ""),
-                    "script": redacted.get("script", ""),
-                })
+                }
+                if include_scripts:
+                    redacted = _redact_script_fields(r, ["script"])
+                    entry["script"] = redacted.get("script", "")
+                scripts.append(entry)
 
-            return _json({
+            result: dict[str, Any] = {
                 "table": table,
                 "count": len(scripts),
                 "client_scripts": scripts,
-            })
+                "suggested_next": f"Use get_business_rules(table='{table}') for server-side scripts, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full summary.",
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(scripts), limit)
+            result["next_offset"] = offset + len(scripts)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -216,10 +250,15 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     ) -> str:
         """Get Flow Designer flows related to a CMDB table.
 
-        Searches sys_hub_flow for flows whose internal data references the
+        Searches sys_hub_flow for flows whose internal_name references the
         specified table. Note: flow trigger/action details are stored in
         sub-tables, so this provides an overview — use the ServiceNow UI
         for full flow logic inspection.
+
+        Limitation: Matches flows by internal_name CONTAINS table — flows
+        referencing the table indirectly (e.g. via subflow or action) may
+        not appear. If no results are returned, verify in the ServiceNow
+        Flow Designer UI directly.
 
         Args:
             table: The CMDB table to find flows for (e.g. cmdb_ci_server).
@@ -232,6 +271,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             name, description, active status, and run_as.
         """
         logger.info("get_flows: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -248,16 +289,19 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_hub_flow",
-                query=query,
-                fields=[
-                    "sys_id", "name", "internal_name", "description",
-                    "active", "run_as",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYname",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_hub_flow",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "internal_name", "description",
+                        "active", "run_as",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYname",
+                ),
+                _safe_total(client, "sys_hub_flow", query),
             )
 
             flows = [
@@ -272,11 +316,16 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "table": table,
                 "count": len(flows),
                 "flows": flows,
-            })
+                "suggested_next": f"Use get_business_rules(table='{table}') for server-side logic, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full overview.",
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(flows), limit)
+            result["next_offset"] = offset + len(flows)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -290,6 +339,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     async def get_acls(
         table: str,
         active_only: bool = True,
+        include_scripts: bool = False,
         limit: int = 25,
         offset: int = 0,
     ) -> str:
@@ -302,15 +352,19 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         Args:
             table: The CMDB table to inspect (e.g. cmdb_ci_server).
             active_only: If True, return only active ACLs. Defaults to True.
+            include_scripts: If True, include full (redacted) script bodies. Defaults to
+                           False for token efficiency — set True when you need to review logic.
             limit: Maximum ACLs to return (1-1000, default 25).
             offset: Pagination offset.
 
         Returns:
-            JSON object with "table", "count", and "acls" list containing
-            name, operation, type, admin_overrides, condition, and
-            redacted script body.
+            JSON object with "table", "count", "total_count", "has_more", "next_offset",
+            and "acls" list containing name, operation, type, admin_overrides, condition,
+            and optionally the redacted script body.
         """
         logger.info("get_acls: table=%s", table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -327,22 +381,24 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_security_acl",
-                query=query,
-                fields=[
-                    "sys_id", "name", "operation", "type", "active",
-                    "admin_overrides", "condition", "script",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYname",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_security_acl",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "operation", "type", "active",
+                        "admin_overrides", "condition", "script",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYname",
+                ),
+                _safe_total(client, "sys_security_acl", query),
             )
 
             acls = []
             for r in records:
-                redacted = _redact_script_fields(r, ["script"])
-                acls.append({
+                entry: dict[str, Any] = {
                     "sys_id": r.get("sys_id", ""),
                     "name": r.get("name", ""),
                     "operation": r.get("operation", ""),
@@ -350,14 +406,22 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                     "active": r.get("active", ""),
                     "admin_overrides": r.get("admin_overrides", ""),
                     "condition": r.get("condition", ""),
-                    "script": redacted.get("script", ""),
-                })
+                }
+                if include_scripts:
+                    redacted = _redact_script_fields(r, ["script"])
+                    entry["script"] = redacted.get("script", "")
+                acls.append(entry)
 
-            return _json({
+            result: dict[str, Any] = {
                 "table": table,
                 "count": len(acls),
                 "acls": acls,
-            })
+                "suggested_next": f"Use get_business_rules(table='{table}') for server-side scripts, get_client_scripts(table='{table}') for UI scripts, or analyze_configurables(table='{table}') for a full summary.",
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(acls), limit)
+            result["next_offset"] = offset + len(acls)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -389,6 +453,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "active_count" and "total_count".
         """
         logger.info("analyze_configurables: table=%s", table)
+        if err := _require_client(client):
+            return err
 
         if err := _validate_table_name(table):
             return _json({

@@ -25,6 +25,7 @@ def _parse(json_str: str) -> dict:
 def mock_client() -> AsyncMock:
     client = AsyncMock()
     client.get_records = AsyncMock(return_value=[])
+    client.get_aggregate = AsyncMock(return_value={"result": {"stats": {"count": "0"}}})
     return client
 
 
@@ -73,6 +74,13 @@ class TestListDiscoverySchedules:
         result = _parse(await tools["list_discovery_schedules"]())
         assert result["count"] == 0
         assert result["schedules"] == []
+
+    @pytest.mark.asyncio
+    async def test_pagination_signals(self, mock_client, tools):
+        result = _parse(await tools["list_discovery_schedules"]())
+        assert result["total_count"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] == 0
 
     @pytest.mark.asyncio
     async def test_returns_schedules(self, mock_client, tools):
@@ -181,6 +189,20 @@ class TestGetDiscoveryStatus:
         assert result["error"] is True
 
     @pytest.mark.asyncio
+    async def test_invalid_state_rejected(self, tools):
+        result = _parse(await tools["get_discovery_status"](state="BadState"))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "Invalid state" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_valid_states_accepted(self, mock_client, tools):
+        for state in ("Starting", "Active", "Completed", "Cancelled", "Error"):
+            await tools["get_discovery_status"](state=state)
+            call_args = mock_client.get_records.call_args
+            assert f"state={state}" in call_args.kwargs["query"]
+
+    @pytest.mark.asyncio
     async def test_orders_desc(self, mock_client, tools):
         await tools["get_discovery_status"]()
         call_args = mock_client.get_records.call_args
@@ -257,10 +279,18 @@ class TestGetDiscoveryErrors:
         assert "gs.daysAgo(365)" in call_args.kwargs["query"]
 
     @pytest.mark.asyncio
-    async def test_severity_injection_blocked(self, tools):
-        result = _parse(await tools["get_discovery_errors"](severity="Error^active=false"))
+    async def test_invalid_severity_rejected(self, tools):
+        result = _parse(await tools["get_discovery_errors"](severity="Critical"))
         assert result["error"] is True
         assert result["category"] == "ValidationError"
+        assert "Invalid severity" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_valid_severities_accepted(self, mock_client, tools):
+        for sev in ("Error", "Warning", "Info"):
+            await tools["get_discovery_errors"](severity=sev)
+            call_args = mock_client.get_records.call_args
+            assert f"level={sev}" in call_args.kwargs["query"]
 
     @pytest.mark.asyncio
     async def test_days_back_in_response(self, mock_client, tools):

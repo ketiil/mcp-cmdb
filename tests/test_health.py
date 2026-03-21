@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from servicenow_cmdb_mcp.errors import SNPermissionError
+from servicenow_cmdb_mcp.errors import InstanceError, SNPermissionError, SNTimeoutError
 from servicenow_cmdb_mcp.tools._utils import _clamp_limit, _clamp_offset, _extract_agg_count
 from servicenow_cmdb_mcp.tools.health import (
     _parse_agg_groups,
@@ -473,3 +473,112 @@ class TestCmdbHealthSummary:
 
         await tools["cmdb_health_summary"]()
         assert mock_client.get_aggregate.call_count == 5
+
+
+# ── Error retry_after_seconds ──────────────────────────────────────
+
+class TestErrorRetryAfterSeconds:
+    def test_instance_error_includes_retry_after(self):
+        err = InstanceError("Server error")
+        data = json.loads(err.to_json())
+        assert data["retry"] is True
+        assert data["retry_after_seconds"] == 5
+
+    def test_timeout_error_includes_retry_after(self):
+        err = SNTimeoutError("Timed out")
+        data = json.loads(err.to_json())
+        assert data["retry"] is True
+        assert data["retry_after_seconds"] == 10
+
+    def test_permission_error_no_retry_after(self):
+        err = SNPermissionError("Denied")
+        data = json.loads(err.to_json())
+        assert data["retry"] is False
+        assert "retry_after_seconds" not in data
+
+
+# ── find_orphan_cis graceful degradation ───────────────────────────
+
+class TestFindOrphanCisGracefulDegradation:
+    @pytest.mark.asyncio
+    async def test_partial_results_on_child_check_failure(self, mock_client, tools):
+        """If child-check fails, should still return partial orphan results."""
+        ci_records = [_ci_record(CI_A, "Orphan-A"), _ci_record(CI_B, "Maybe-Orphan-B")]
+        call_count = {"n": 0}
+
+        async def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                if "parentIN" in query:
+                    # Parent check succeeds: CI_A has a parent relationship
+                    return [{"parent": CI_A}]
+                if "childIN" in query:
+                    # Child check fails
+                    raise SNPermissionError("Access denied to cmdb_rel_ci")
+                return []
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ci_records
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+
+        result = _parse(await tools["find_orphan_cis"]())
+        # Should not be an error response
+        assert "error" not in result
+        # CI_A was found as parent, so not orphan; CI_B is reported as orphan
+        assert result["count"] == 1
+        assert result["orphan_cis"][0]["sys_id"] == CI_B
+        # Should indicate partial results
+        assert result["is_partial"] is True
+        assert "partial_warning" in result
+        assert "Child relationship check failed" in result["partial_warning"]
+
+    @pytest.mark.asyncio
+    async def test_partial_results_on_parent_check_failure(self, mock_client, tools):
+        """If parent-check fails, should still return partial orphan results."""
+        ci_records = [_ci_record(CI_A, "Maybe-Orphan")]
+        call_count = {"n": 0}
+
+        async def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                if "parentIN" in query:
+                    raise SNPermissionError("Access denied")
+                if "childIN" in query:
+                    return []
+                return []
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ci_records
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+
+        result = _parse(await tools["find_orphan_cis"]())
+        assert "error" not in result
+        assert result["is_partial"] is True
+        assert "Parent relationship check failed" in result["partial_warning"]
+
+    @pytest.mark.asyncio
+    async def test_no_partial_flag_on_success(self, mock_client, tools):
+        """When both checks succeed, is_partial should not be in the response."""
+        ci_records = [_ci_record(CI_A, "Orphan-A")]
+        call_count = {"n": 0}
+
+        async def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            if table == "cmdb_rel_ci":
+                return []
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ci_records
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+
+        result = _parse(await tools["find_orphan_cis"]())
+        assert "is_partial" not in result
+        assert "partial_warning" not in result

@@ -176,6 +176,13 @@ class TestGetBusinessRules:
         assert result["business_rules"] == []
 
     @pytest.mark.asyncio
+    async def test_pagination_signals(self, mock_client, tools):
+        result = _parse(await tools["get_business_rules"](table="cmdb_ci_server"))
+        assert result["total_count"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] == 0
+
+    @pytest.mark.asyncio
     async def test_returns_rules(self, mock_client, tools):
         mock_client.get_records.return_value = [
             {

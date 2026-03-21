@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
-from servicenow_cmdb_mcp.tools._utils import _validate_table_name
+from servicenow_cmdb_mcp.tools._utils import _require_client, _validate_table_name
 from servicenow_cmdb_mcp.tools.queries import fetch_class_description
 
 logger = logging.getLogger(__name__)
@@ -219,6 +219,8 @@ def register_schema_resources(
     async def cmdb_schema_classes() -> str:
         """Full CMDB class hierarchy as a flat list from sys_db_object."""
         logger.info("resource: cmdb://schema/classes")
+        if err := _require_client(client):
+            return err
         try:
             data = await _fetch_all_classes(client, cache)
             classes = data["classes"]
@@ -239,6 +241,8 @@ def register_schema_resources(
     async def cmdb_schema_class_fields(class_name: str) -> str:
         """Field definitions for a specific CMDB CI class from sys_dictionary."""
         logger.info("resource: cmdb://schema/classes/%s", class_name)
+        if err := _require_client(client):
+            return err
 
         if err := _validate_table_name(class_name):
             return _json({
@@ -262,6 +266,8 @@ def register_schema_resources(
     async def cmdb_schema_relationship_types() -> str:
         """All relationship types from cmdb_rel_type."""
         logger.info("resource: cmdb://schema/relationship-types")
+        if err := _require_client(client):
+            return err
         try:
             types = await _fetch_relationship_types(client, cache)
             return _json({"count": len(types), "relationship_types": types})
@@ -277,6 +283,8 @@ def register_schema_resources(
     async def cmdb_instance_metadata() -> str:
         """Instance version, CMDB plugins, and CI count."""
         logger.info("resource: cmdb://instance/metadata")
+        if err := _require_client(client):
+            return err
         try:
             result = await _fetch_instance_metadata(client, cache)
             return _json(result)

@@ -11,7 +11,8 @@ from mcp.server.fastmcp import FastMCP
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
-from servicenow_cmdb_mcp.tools._utils import _TABLE_NAME_RE, _json, _validate_cmdb_table
+from servicenow_cmdb_mcp.redaction import redact_credentials
+from servicenow_cmdb_mcp.tools._utils import _TABLE_NAME_RE, _json, _require_client, _validate_cmdb_table, _validate_sys_id
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,11 @@ _MAX_FIELD_VALUE_LENGTH = 10_000
 def _generate_token() -> str:
     """Generate a short random confirmation token."""
     return secrets.token_hex(8)
+
+
+def _redact_field_values(fields: dict[str, str]) -> dict[str, Any]:
+    """Apply credential redaction to field values for safe display in previews."""
+    return {k: redact_credentials(v) if isinstance(v, str) else v for k, v in fields.items()}
 
 
 def _validate_fields(fields: dict[str, str]) -> str | None:
@@ -86,6 +92,12 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
     # In-memory store for pending operations, keyed by token
     pending: dict[str, _PendingOperation] = {}
 
+    # Completed operations cache for idempotent retries — token → (expiry_timestamp, json_result)
+    _completed_ops: dict[str, tuple[float, str]] = {}
+
+    # TTL for completed operation cache (seconds)
+    _COMPLETED_TTL = 60
+
     def _cleanup_expired() -> None:
         """Remove expired tokens and enforce max pending cap."""
         expired = [t for t, op in pending.items() if op.is_expired()]
@@ -96,11 +108,23 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             by_age = sorted(pending.items(), key=lambda x: x[1].created_at)
             for t, _ in by_age[: len(pending) - _MAX_PENDING]:
                 del pending[t]
+        # Clean up expired completed operations and enforce cap
+        now = time.time()
+        expired_completed = [t for t, (exp, _) in _completed_ops.items() if now >= exp]
+        for t in expired_completed:
+            del _completed_ops[t]
+        if len(_completed_ops) > _MAX_PENDING:
+            # Evict oldest entries (earliest expiry) to stay within bounds
+            by_expiry = sorted(_completed_ops.items(), key=lambda x: x[1][0])
+            for t, _ in by_expiry[: len(_completed_ops) - _MAX_PENDING]:
+                del _completed_ops[t]
 
     @mcp.tool(
         annotations={
             "readOnlyHint": True,
             "destructiveHint": False,
+            # Idempotent w.r.t. ServiceNow — generates a new token internally
+            # but has no external side effects.
             "idempotentHint": True,
         },
     )
@@ -133,14 +157,16 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "diff" (list of field changes with old/new values), and "fields" (proposed values).
         """
         logger.info("preview_ci_update: sys_id=%s table=%s", sys_id, table)
+        if err := _require_client(client):
+            return err
         _cleanup_expired()
 
-        if not sys_id or not sys_id.strip():
+        if err := _validate_sys_id(sys_id):
             return _json({
                 "error": True,
                 "category": "ValidationError",
-                "message": "sys_id must not be empty.",
-                "suggestion": "Provide the sys_id of the CI to update.",
+                "message": err,
+                "suggestion": "Provide a valid 32-character hex sys_id of the CI to update.",
                 "retry": False,
             })
 
@@ -207,9 +233,10 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "ci_name": current.get("name", ""),
                 "ci_class": current.get("sys_class_name", ""),
                 "diff": diff,
-                "fields": fields,
+                "fields": _redact_field_values(fields),
                 "expires_in_seconds": _TOKEN_TTL,
                 "message": f"Review the diff above. To apply, call confirm_ci_update with token '{token}'.",
+                "note": "Write permission is not verified until confirm. The confirm step may fail with PermissionError if the service account lacks write access to this table.",
             })
         except NotFoundError:
             return _json({
@@ -226,7 +253,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         annotations={
             "readOnlyHint": False,
             "destructiveHint": True,
-            "idempotentHint": False,
+            # Idempotent within 60s via _completed_ops cache — safe to retry
+            "idempotentHint": True,
         },
     )
     async def confirm_ci_update(
@@ -246,6 +274,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             JSON object with "success", "sys_id", "table", and the "updated_record".
         """
         logger.info("confirm_ci_update: token=%s", token[:4] + "****" if token else "(empty)")
+        if err := _require_client(client):
+            return err
         _cleanup_expired()
 
         if not token or not token.strip():
@@ -256,6 +286,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Call preview_ci_update first to get a token.",
                 "retry": False,
             })
+
+        # Check completed operations cache for idempotent retry
+        if token in _completed_ops:
+            expiry, cached_result = _completed_ops[token]
+            if time.time() < expiry:
+                logger.info("confirm_ci_update: returning cached result for token=%s", token[:4] + "****")
+                return cached_result
+            else:
+                del _completed_ops[token]
 
         op = pending.get(token)
         if op is None:
@@ -277,10 +316,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        # Consume token — single-use
-        del pending[token]
-
         if op.operation != "update":
+            del pending[token]
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -288,6 +325,11 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Use confirm_ci_create for create tokens.",
                 "retry": False,
             })
+
+        logger.info(
+            "AUDIT confirm_ci_update: table=%s sys_id=%s fields=%s",
+            op.table, op.sys_id, list(op.fields.keys()),
+        )
 
         try:
             response = await client.patch(
@@ -299,20 +341,43 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             )
             updated = response.get("result", response)
 
-            return _json({
+            # Consume token only after successful write
+            del pending[token]
+
+            logger.info(
+                "AUDIT confirm_ci_update: SUCCESS table=%s sys_id=%s",
+                op.table, op.sys_id,
+            )
+
+            result = _json({
                 "success": True,
                 "operation": "update",
                 "sys_id": op.sys_id,
                 "table": op.table,
                 "updated_record": updated,
+                "suggested_next": f"Use get_ci_details(sys_id='{op.sys_id}', table='{op.table}') to verify the update, or get_ci_relationships(ci_sys_id='{op.sys_id}') to check downstream impact.",
             })
+
+            # Cache result for idempotent retries
+            _completed_ops[token] = (time.time() + _COMPLETED_TTL, result)
+
+            return result
         except ServiceNowError as e:
+            logger.error(
+                "AUDIT confirm_ci_update: FAILED table=%s sys_id=%s error=%s",
+                op.table, op.sys_id, e.category,
+            )
+            # Always consume token on failure — user must preview again to retry.
+            # This is predictable: one token, one attempt, regardless of error type.
+            pending.pop(token, None)
             return e.to_json()
 
     @mcp.tool(
         annotations={
             "readOnlyHint": True,
             "destructiveHint": False,
+            # Idempotent w.r.t. ServiceNow — generates a new token internally
+            # but has no external side effects.
             "idempotentHint": True,
         },
     )
@@ -327,6 +392,12 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
 
         The confirmation token is valid for 5 minutes.
 
+        Prerequisites: Call describe_ci_class(table) first to review mandatory
+        fields and valid values before composing the fields dict. Call
+        suggest_table if you are unsure of the correct table name.
+
+        Typical workflow: suggest_table → describe_ci_class → preview_ci_create → confirm_ci_create
+
         Args:
             table: The CMDB table to create the CI in (e.g. cmdb_ci_server).
             fields: Dictionary of field names to values. Must include at minimum
@@ -340,6 +411,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "fields" (the values to be created), and a human-readable message.
         """
         logger.info("preview_ci_create: table=%s", table)
+        if err := _require_client(client):
+            return err
         _cleanup_expired()
 
         if err := _validate_cmdb_table(table):
@@ -382,16 +455,18 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             "token": token,
             "operation": "create",
             "table": table,
-            "fields": fields,
+            "fields": _redact_field_values(fields),
             "expires_in_seconds": _TOKEN_TTL,
             "message": f"Review the fields above. To create, call confirm_ci_create with token '{token}'.",
+            "note": "Write permission is not verified until confirm. The confirm step may fail with PermissionError if the service account lacks write access to this table.",
         })
 
     @mcp.tool(
         annotations={
             "readOnlyHint": False,
             "destructiveHint": True,
-            "idempotentHint": False,
+            # Idempotent within 60s via _completed_ops cache — safe to retry
+            "idempotentHint": True,
         },
     )
     async def confirm_ci_create(
@@ -412,6 +487,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             and the "created_record".
         """
         logger.info("confirm_ci_create: token=%s", token[:4] + "****" if token else "(empty)")
+        if err := _require_client(client):
+            return err
         _cleanup_expired()
 
         if not token or not token.strip():
@@ -422,6 +499,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Call preview_ci_create first to get a token.",
                 "retry": False,
             })
+
+        # Check completed operations cache for idempotent retry
+        if token in _completed_ops:
+            expiry, cached_result = _completed_ops[token]
+            if time.time() < expiry:
+                logger.info("confirm_ci_create: returning cached result for token=%s", token[:4] + "****")
+                return cached_result
+            else:
+                del _completed_ops[token]
 
         op = pending.get(token)
         if op is None:
@@ -443,10 +529,8 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "retry": False,
             })
 
-        # Consume token — single-use
-        del pending[token]
-
         if op.operation != "create":
+            del pending[token]
             return _json({
                 "error": True,
                 "category": "ValidationError",
@@ -454,6 +538,11 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 "suggestion": "Use confirm_ci_update for update tokens.",
                 "retry": False,
             })
+
+        logger.info(
+            "AUDIT confirm_ci_create: table=%s fields=%s",
+            op.table, list(op.fields.keys()),
+        )
 
         try:
             response = await client.post(
@@ -465,12 +554,33 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             )
             created = response.get("result", response)
 
-            return _json({
+            # Consume token only after successful write
+            del pending[token]
+
+            logger.info(
+                "AUDIT confirm_ci_create: SUCCESS table=%s sys_id=%s",
+                op.table, created.get("sys_id", ""),
+            )
+
+            new_sys_id = created.get("sys_id", "")
+            result = _json({
                 "success": True,
                 "operation": "create",
-                "sys_id": created.get("sys_id", ""),
+                "sys_id": new_sys_id,
                 "table": op.table,
                 "created_record": created,
+                "suggested_next": f"Use get_ci_details(sys_id='{new_sys_id}', table='{op.table}') to verify the new record, or describe_ci_class(class_name='{op.table}') to review available fields.",
             })
+
+            # Cache result for idempotent retries
+            _completed_ops[token] = (time.time() + _COMPLETED_TTL, result)
+
+            return result
         except ServiceNowError as e:
+            logger.error(
+                "AUDIT confirm_ci_create: FAILED table=%s error=%s",
+                op.table, e.category,
+            )
+            # Always consume token on failure — user must preview again to retry.
+            pending.pop(token, None)
             return e.to_json()

@@ -184,6 +184,13 @@ class TestSearchCis:
         assert result["records"][0]["name"] == "web-01"
 
     @pytest.mark.asyncio
+    async def test_pagination_signals(self, mock_client, tools):
+        result = _parse(await tools["search_cis"](ci_class="cmdb_ci_server"))
+        assert result["total_count"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] == 0
+
+    @pytest.mark.asyncio
     async def test_invalid_table_returns_error(self, tools):
         result = _parse(await tools["search_cis"](ci_class="sys_user"))
         assert result["error"] is True
@@ -217,6 +224,20 @@ class TestSearchCis:
         await tools["search_cis"](fields=["sys_id", "name"])
         call_kwargs = mock_client.get_records.call_args.kwargs
         assert call_kwargs["fields"] == ["sys_id", "name"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_operational_status(self, tools):
+        result = _parse(await tools["search_cis"](operational_status="99"))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "Invalid operational_status" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_valid_operational_status(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        await tools["search_cis"](operational_status="4")
+        call_kwargs = mock_client.get_records.call_args.kwargs
+        assert "operational_status=4" in call_kwargs["query"]
 
 
 # ── query_cis_raw ───────────────────────────────────────────────────
@@ -304,7 +325,9 @@ class TestCountCis:
     async def test_returns_count(self, mock_client, tools):
         mock_client.get_aggregate.return_value = {"result": {"stats": {"count": "42"}}}
         result = _parse(await tools["count_cis"](table="cmdb_ci"))
-        assert result["stats"]["count"] == "42"
+        assert result["table"] == "cmdb_ci"
+        assert result["total"] == 42
+        assert "suggested_next" in result
 
     @pytest.mark.asyncio
     async def test_invalid_table(self, tools):
@@ -313,10 +336,25 @@ class TestCountCis:
 
     @pytest.mark.asyncio
     async def test_with_group_by(self, mock_client, tools):
-        mock_client.get_aggregate.return_value = {"result": []}
-        await tools["count_cis"](table="cmdb_ci", group_by="sys_class_name")
+        mock_client.get_aggregate.return_value = {
+            "result": [
+                {
+                    "stats": {"count": "10"},
+                    "groupby_fields": [{"value": "1"}],
+                },
+                {
+                    "stats": {"count": "5"},
+                    "groupby_fields": [{"value": "2"}],
+                },
+            ],
+        }
+        result = _parse(await tools["count_cis"](table="cmdb_ci", group_by="sys_class_name"))
         call_kwargs = mock_client.get_aggregate.call_args.kwargs
         assert call_kwargs["group_by"] == "sys_class_name"
+        assert result["group_by"] == "sys_class_name"
+        assert len(result["groups"]) == 2
+        assert result["groups"][0] == {"value": "1", "count": 10}
+        assert result["groups"][1] == {"value": "2", "count": 5}
 
     @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):
@@ -365,6 +403,57 @@ class TestSuggestTable:
         # Second call should hit cache — only 1 API call
         assert mock_client.get_records.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_pagination_with_offset(self, mock_client, cache, tools):
+        mock_client.get_records.return_value = [
+            {"name": f"cmdb_ci_server_{i}", "label": f"Server {i}", "super_class": "cmdb_ci"}
+            for i in range(5)
+        ]
+        result = _parse(await tools["suggest_table"](description="server", limit=2, offset=0))
+        assert result["suggestion_count"] == 2
+        assert result["total_count"] == 5
+        assert result["has_more"] is True
+        assert result["next_offset"] == 2
+
+        # Fetch next page
+        result2 = _parse(await tools["suggest_table"](description="server", limit=2, offset=2))
+        assert result2["suggestion_count"] == 2
+        assert result2["next_offset"] == 4
+        assert result2["has_more"] is True
+
+        # Last page
+        result3 = _parse(await tools["suggest_table"](description="server", limit=2, offset=4))
+        assert result3["suggestion_count"] == 1
+        assert result3["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_confidence_field_present(self, mock_client, cache, tools):
+        mock_client.get_records.return_value = [
+            {"name": "cmdb_ci_linux_server", "label": "Linux Server", "super_class": "cmdb_ci_server"},
+            {"name": "cmdb_ci_server", "label": "Server", "super_class": "cmdb_ci"},
+            {"name": "cmdb_ci_appl", "label": "Application", "super_class": "cmdb_ci"},
+        ]
+        result = _parse(await tools["suggest_table"](description="linux server"))
+        for s in result["suggestions"]:
+            assert "confidence" in s
+            assert isinstance(s["confidence"], int)
+            assert 0 <= s["confidence"] <= 100
+
+    @pytest.mark.asyncio
+    async def test_best_match_set_when_dominant(self, mock_client, cache, tools):
+        mock_client.get_records.return_value = [
+            {"name": "cmdb_ci_linux_server", "label": "Linux Server", "super_class": "cmdb_ci_server"},
+            {"name": "cmdb_ci_appl", "label": "Application", "super_class": "cmdb_ci"},
+            {"name": "cmdb_ci_database", "label": "Database", "super_class": "cmdb_ci"},
+        ]
+        # "linux server" matches 2/2 keywords for cmdb_ci_linux_server (100%)
+        # but no other class matches both keywords well
+        result = _parse(await tools["suggest_table"](description="linux server"))
+        top = result["suggestions"][0]
+        assert top["table"] == "cmdb_ci_linux_server"
+        assert top["confidence"] == 100
+        assert top.get("best_match") is True
+
 
 # ── list_ci_classes ─────────────────────────────────────────────────
 
@@ -400,6 +489,30 @@ class TestListCiClasses:
         assert result["count"] == 3
 
     @pytest.mark.asyncio
+    async def test_with_offset(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            {"name": f"cmdb_ci_{i}", "label": f"CI {i}", "super_class": "cmdb_ci", "sys_id": f"s{i}"}
+            for i in range(10)
+        ]
+        result = _parse(await tools["list_ci_classes"](limit=3, offset=2))
+        assert result["count"] == 3
+        assert result["classes"][0]["name"] == "cmdb_ci_2"
+        assert result["has_more"] is True
+        assert result["next_offset"] == 5
+        assert result["total_count"] == 10
+
+    @pytest.mark.asyncio
+    async def test_offset_beyond_results(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            {"name": "cmdb_ci_server", "label": "Server", "super_class": "cmdb_ci", "sys_id": "s1"},
+        ]
+        result = _parse(await tools["list_ci_classes"](offset=50))
+        assert result["count"] == 0
+        assert result["classes"] == []
+        assert result["has_more"] is False
+        assert result["total_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):
         mock_client.get_records.side_effect = SNPermissionError("Denied")
         result = _parse(await tools["list_ci_classes"]())
@@ -424,11 +537,50 @@ class TestDescribeCiClass:
             # cmdb_rel_type_suggest
             [],
         ]
+        # Summary mode (default) — returns counts and mandatory field names only
         result = _parse(await tools["describe_ci_class"](class_name="cmdb_ci_server"))
         assert result["class_name"] == "cmdb_ci_server"
         assert result["field_count"] == 1
+        assert result["mandatory_fields"] == ["name"]
+        assert "fields" not in result
+
+        # Full mode — returns complete field definitions
+        mock_client.get_records.side_effect = [
+            [{"super_class": ""}],
+            [
+                {"name": "cmdb_ci_server", "element": "name", "column_label": "Name",
+                 "internal_type": "string", "max_length": "100", "mandatory": "true",
+                 "reference": "", "default_value": ""},
+            ],
+            [],
+        ]
+        result = _parse(await tools["describe_ci_class"](class_name="cmdb_ci_server", summary=False))
+        assert result["class_name"] == "cmdb_ci_server"
         assert result["fields"][0]["name"] == "name"
         assert result["fields"][0]["mandatory"] is True
+
+    @pytest.mark.asyncio
+    async def test_full_mode_strips_empty_strings(self, mock_client, tools):
+        mock_client.get_records.side_effect = [
+            # sys_db_object hierarchy walk
+            [{"super_class": ""}],
+            # sys_dictionary fields — note empty default_value and reference
+            [
+                {"name": "cmdb_ci_server", "element": "name", "column_label": "Name",
+                 "internal_type": "string", "max_length": "100", "mandatory": "true",
+                 "reference": "", "default_value": ""},
+            ],
+            # cmdb_rel_type_suggest
+            [],
+        ]
+        result = _parse(await tools["describe_ci_class"](class_name="cmdb_ci_server", summary=False))
+        field = result["fields"][0]
+        # Empty string values should be stripped
+        assert "default_value" not in field
+        assert "reference" not in field
+        # Non-empty values should be preserved
+        assert field["max_length"] == "100"
+        assert field["name"] == "name"
 
     @pytest.mark.asyncio
     async def test_service_now_error(self, mock_client, tools):

@@ -18,19 +18,20 @@ class ServiceNowError(Exception):
         self.message = message
         self.suggestion = suggestion
         self.retry = retry
+        self.retry_after_seconds: int | None = None
 
     def to_json(self) -> str:
         """Serialize to JSON string for tool responses."""
-        return json.dumps(
-            {
-                "error": True,
-                "category": self.category,
-                "message": self.message,
-                "suggestion": self.suggestion,
-                "retry": self.retry,
-            },
-            indent=2,
-        )
+        data = {
+            "error": True,
+            "category": self.category,
+            "message": self.message,
+            "suggestion": self.suggestion,
+            "retry": self.retry,
+        }
+        if self.retry_after_seconds is not None:
+            data["retry_after_seconds"] = self.retry_after_seconds
+        return json.dumps(data, indent=2)
 
 
 class SNValidationError(ServiceNowError):
@@ -95,6 +96,7 @@ class RateLimitError(ServiceNowError):
             retry=True,
         )
         self.retry_after = retry_after
+        self.retry_after_seconds = retry_after
 
 
 class InstanceError(ServiceNowError):
@@ -107,6 +109,7 @@ class InstanceError(ServiceNowError):
             suggestion="ServiceNow instance may be experiencing issues. Try again shortly.",
             retry=True,
         )
+        self.retry_after_seconds = 5
 
 
 class SNTimeoutError(ServiceNowError):
@@ -119,6 +122,7 @@ class SNTimeoutError(ServiceNowError):
             suggestion="Request timed out. Try a more specific query or increase timeout.",
             retry=True,
         )
+        self.retry_after_seconds = 10
 
 
 class PluginError(ServiceNowError):

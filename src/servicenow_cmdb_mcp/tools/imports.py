@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -11,7 +13,10 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
+    _has_more,
     _json,
+    _require_client,
+    _safe_total,
     _validate_table_name,
 )
 
@@ -52,6 +57,8 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             last run timestamp.
         """
         logger.info("list_data_sources: target_table=%s", target_table)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -72,16 +79,19 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_data_source",
-                query=query,
-                fields=[
-                    "sys_id", "name", "import_set_table_name", "type",
-                    "active", "sys_updated_on",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYname",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_data_source",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "import_set_table_name", "type",
+                        "active", "sys_updated_on",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYname",
+                ),
+                _safe_total(client, "sys_data_source", query),
             )
 
             sources = [
@@ -96,12 +106,16 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "count": len(sources),
                 "target_table_filter": target_table or "(all)",
                 "data_sources": sources,
                 "suggested_next": "Use get_import_set_runs(table_name) to see recent runs for a data source, or get_transform_errors(target_table) for mapping failures.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(sources), limit)
+            result["next_offset"] = offset + len(sources)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -127,7 +141,9 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
 
         Args:
             table_name: Filter by import set table name (STARTSWITH match). Optional.
-            state: Filter by run state (e.g. "Loaded", "Error", "Processed"). Optional.
+            state: Filter by run state. Common values include "Loaded", "Processed",
+                  "Error", "Complete", "Complete with errors", "Cancelled". Values
+                  may vary by instance configuration. Optional.
             days: How far back to search in days (1-365, default 7).
             limit: Maximum runs to return (1-1000, default 25).
             offset: Pagination offset.
@@ -137,6 +153,8 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             containing sys_id, table_name, state, row counts, and timestamps.
         """
         logger.info("get_import_set_runs: table_name=%s state=%s days=%d", table_name, state, days)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         days = max(1, min(days, 365))
@@ -166,17 +184,20 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append(f"state={state}")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_import_set_run",
-                query=query,
-                fields=[
-                    "sys_id", "table_name", "state", "count",
-                    "insert_count", "update_count", "error_count",
-                    "data_source", "sys_created_on", "completed",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYDESCsys_created_on",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_import_set_run",
+                    query=query,
+                    fields=[
+                        "sys_id", "table_name", "state", "count",
+                        "insert_count", "update_count", "error_count",
+                        "data_source", "sys_created_on", "completed",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYDESCsys_created_on",
+                ),
+                _safe_total(client, "sys_import_set_run", query),
             )
 
             runs = [
@@ -195,12 +216,16 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "count": len(runs),
                 "days_back": days,
                 "import_set_runs": runs,
                 "suggested_next": "Use get_transform_errors(target_table) to see row-level errors, or list_data_sources() to review source configuration.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(runs), limit)
+            result["next_offset"] = offset + len(runs)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()
 
@@ -235,6 +260,8 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             source and target records, and timestamp.
         """
         logger.info("get_transform_errors: target_table=%s days=%d", target_table, days)
+        if err := _require_client(client):
+            return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         days = max(1, min(days, 365))
@@ -256,17 +283,20 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 query_parts.append(f"sys_target_tableSTARTSWITH{target_table}")
             query = "^".join(query_parts)
 
-            records = await client.get_records(
-                table="sys_import_set_row",
-                query=query,
-                fields=[
-                    "sys_id", "sys_import_set", "sys_transform_map",
-                    "sys_target_table", "sys_target_sys_id",
-                    "error_message", "status", "sys_created_on",
-                ],
-                limit=limit,
-                offset=offset,
-                order_by="ORDERBYDESCsys_created_on",
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_import_set_row",
+                    query=query,
+                    fields=[
+                        "sys_id", "sys_import_set", "sys_transform_map",
+                        "sys_target_table", "sys_target_sys_id",
+                        "error_message", "status", "sys_created_on",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYDESCsys_created_on",
+                ),
+                _safe_total(client, "sys_import_set_row", query),
             )
 
             errors = [
@@ -283,11 +313,15 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 for r in records
             ]
 
-            return _json({
+            result: dict[str, Any] = {
                 "count": len(errors),
                 "days_back": days,
                 "transform_errors": errors,
                 "suggested_next": "Use get_ci_details(sys_id) to inspect a target CI, or get_import_set_runs() to see the parent import run.",
-            })
+            }
+            result["total_count"] = total
+            result["has_more"] = _has_more(total, offset, len(errors), limit)
+            result["next_offset"] = offset + len(errors)
+            return _json(result)
         except ServiceNowError as e:
             return e.to_json()

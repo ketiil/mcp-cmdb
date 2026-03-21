@@ -145,6 +145,18 @@ class TestPreviewCiUpdate:
         assert result["diff"][0]["changed"] is True
 
     @pytest.mark.asyncio
+    async def test_preview_includes_permission_note(self, mock_client, tools):
+        """Preview response should include a note about write permission."""
+        result = _parse(await tools["preview_ci_update"](
+            sys_id=CI_A,
+            table="cmdb_ci_server",
+            fields={"operational_status": "2"},
+        ))
+        assert "note" in result
+        assert "Write permission is not verified until confirm" in result["note"]
+        assert "PermissionError" in result["note"]
+
+    @pytest.mark.asyncio
     async def test_diff_shows_unchanged(self, mock_client, tools):
         """Fields that are the same should show changed=False."""
         result = _parse(await tools["preview_ci_update"](
@@ -255,8 +267,8 @@ class TestConfirmCiUpdate:
         assert "Invalid or expired" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_token_single_use(self, mock_client, tools):
-        """Token should be consumed after first use."""
+    async def test_token_retry_within_grace_period(self, mock_client, tools):
+        """Retry within 60s grace period should return cached result."""
         preview = _parse(await tools["preview_ci_update"](
             sys_id=CI_A, table="cmdb_ci",
             fields={"name": "new-name"},
@@ -267,9 +279,31 @@ class TestConfirmCiUpdate:
         result1 = _parse(await tools["confirm_ci_update"](token=token))
         assert result1["success"] is True
 
-        # Second use fails
+        # Second use within grace period returns same cached result
         result2 = _parse(await tools["confirm_ci_update"](token=token))
+        assert result2["success"] is True
+        assert result2 == result1
+
+        # Should NOT have called patch a second time
+        assert mock_client.patch.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_token_retry_after_grace_period_expires(self, mock_client, tools):
+        """Retry after the 60s grace period should fail."""
+        preview = _parse(await tools["preview_ci_update"](
+            sys_id=CI_A, table="cmdb_ci",
+            fields={"name": "new-name"},
+        ))
+        token = preview["token"]
+
+        result1 = _parse(await tools["confirm_ci_update"](token=token))
+        assert result1["success"] is True
+
+        # Simulate grace period expiry
+        with patch("servicenow_cmdb_mcp.tools.mutations.time.time", return_value=time.time() + 120):
+            result2 = _parse(await tools["confirm_ci_update"](token=token))
         assert result2["error"] is True
+        assert "Invalid or expired" in result2["message"]
 
     @pytest.mark.asyncio
     async def test_expired_token(self, mock_client, tools):
@@ -322,6 +356,17 @@ class TestPreviewCiCreate:
         assert result["operation"] == "create"
         assert result["table"] == "cmdb_ci_server"
         assert result["fields"]["name"] == "new-server"
+
+    @pytest.mark.asyncio
+    async def test_preview_includes_permission_note(self, tools):
+        """Preview response should include a note about write permission."""
+        result = _parse(await tools["preview_ci_create"](
+            table="cmdb_ci_server",
+            fields={"name": "new-server"},
+        ))
+        assert "note" in result
+        assert "Write permission is not verified until confirm" in result["note"]
+        assert "PermissionError" in result["note"]
 
     @pytest.mark.asyncio
     async def test_empty_table(self, tools):
@@ -385,7 +430,8 @@ class TestConfirmCiCreate:
         assert result["error"] is True
 
     @pytest.mark.asyncio
-    async def test_token_single_use(self, mock_client, tools):
+    async def test_token_retry_within_grace_period(self, mock_client, tools):
+        """Retry within 60s grace period should return cached result."""
         preview = _parse(await tools["preview_ci_create"](
             table="cmdb_ci", fields={"name": "x"},
         ))
@@ -394,8 +440,29 @@ class TestConfirmCiCreate:
         result1 = _parse(await tools["confirm_ci_create"](token=token))
         assert result1["success"] is True
 
+        # Second use within grace period returns same cached result
         result2 = _parse(await tools["confirm_ci_create"](token=token))
+        assert result2["success"] is True
+        assert result2 == result1
+
+        # Should NOT have called post a second time
+        assert mock_client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_token_retry_after_grace_period_expires(self, mock_client, tools):
+        """Retry after the 60s grace period should fail."""
+        preview = _parse(await tools["preview_ci_create"](
+            table="cmdb_ci", fields={"name": "x"},
+        ))
+        token = preview["token"]
+
+        result1 = _parse(await tools["confirm_ci_create"](token=token))
+        assert result1["success"] is True
+
+        with patch("servicenow_cmdb_mcp.tools.mutations.time.time", return_value=time.time() + 120):
+            result2 = _parse(await tools["confirm_ci_create"](token=token))
         assert result2["error"] is True
+        assert "Invalid or expired" in result2["message"]
 
     @pytest.mark.asyncio
     async def test_wrong_operation_type(self, mock_client, tools):

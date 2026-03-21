@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from servicenow_cmdb_mcp.client import ServiceNowClient
+
+from servicenow_cmdb_mcp.errors import ServiceNowError
+
+logger = logging.getLogger(__name__)
 
 _MAX_LIMIT = 1000
 
@@ -75,9 +83,49 @@ def _extract_agg_count(agg_result: dict[str, Any]) -> int:
     return 0
 
 
+async def _safe_total(client: ServiceNowClient, table: str, query: str) -> int | None:
+    """Get total record count via aggregate, returning None on failure."""
+    try:
+        agg = await client.get_aggregate(table=table, query=query)
+        return _extract_agg_count(agg)
+    except ServiceNowError:
+        logger.debug("Aggregate count failed for %s", table)
+        return None
+
+
+def _has_more(total: int | None, offset: int, page_len: int, limit: int) -> bool:
+    """Determine if more results exist beyond the current page.
+
+    When total is known, uses exact comparison. When total is unknown
+    (aggregate call failed), falls back to a heuristic: if a full page
+    was returned, there are likely more results.
+    """
+    if total is not None:
+        return offset + page_len < total
+    return page_len == limit
+
+
 def _nav_url(base_url: str, table: str, sys_id: str) -> str:
     """Build a ServiceNow navigation URL for a record."""
     return f"{base_url}/nav_to.do?uri={table}.do%3Fsys_id%3D{sys_id}"
+
+
+def _require_client(client: ServiceNowClient | None) -> str | None:
+    """Return an AuthError JSON response if client is None, else None.
+
+    Use at the top of every tool handler to guard against missing credentials:
+        if (err := _require_client(client)):
+            return err
+    """
+    if client is None:
+        return _json({
+            "error": True,
+            "category": "AuthError",
+            "message": "ServiceNow credentials are not configured.",
+            "suggestion": "Set environment variables: SN_INSTANCE_URL, SN_CLIENT_ID, SN_CLIENT_SECRET, SN_USERNAME, SN_PASSWORD.",
+            "retry": False,
+        })
+    return None
 
 
 def _validate_sys_id(sys_id: str) -> str | None:
