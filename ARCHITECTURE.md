@@ -1,8 +1,8 @@
 # ServiceNow CMDB MCP Server — Architecture Document
 
-**Version:** 1.0  
-**Date:** 2026-03-12  
-**Status:** Pre-implementation — all decisions finalized
+**Version:** 1.1
+**Date:** 2026-03-21
+**Status:** Implemented — 30+ tools, 426+ tests passing
 
 ---
 
@@ -65,7 +65,7 @@ SN_PASSWORD=<service-account-password>
 |---|---|
 | MCP01 — Token Mismanagement | OAuth with short-lived tokens; never echo tokens in tool results; no logging of credentials |
 | MCP02 — Excessive Permissions | Single service account with least-privilege CMDB roles; write tools behind confirmation gate |
-| Input Validation | Strict pydantic schemas on all tool parameters before ServiceNow API calls |
+| Input Validation | `_utils.py` validators on all tool parameters before ServiceNow API calls (pydantic is only for `Settings`) |
 | Credential Redaction | Regex-based scrubbing of patterns matching API keys, tokens, passwords, secrets in script bodies before returning to LLM |
 | Audit Logging | Every tool invocation logged with timestamp, tool name, sanitized parameters (secrets stripped) |
 | Rate Limiting | Respect ServiceNow HTTP 429; exponential backoff with jitter; surface as structured error |
@@ -101,7 +101,7 @@ Redacted content is replaced with `[REDACTED — credential pattern detected]`.
 
 Data Model Navigator metadata (class hierarchy, field definitions, relationship types) changes rarely. Cache strategy:
 
-- On server startup → fetch and cache class hierarchy, relationship types, field dictionaries
+- Lazy-loaded on first tool call that needs metadata (not at startup)
 - TTL: configurable, default 1 hour
 - Manual invalidation tool available (`refresh_metadata_cache`)
 - Cache is in-memory (dict), no external dependencies
@@ -146,8 +146,7 @@ Data Model Navigator metadata (class hierarchy, field definitions, relationship 
 | `find_orphan_cis` | CIs with zero relationships in cmdb_rel_ci. | readOnly, idempotent |
 | `find_duplicate_cis` | CIs with matching name, IP, serial number, or other key fields within a class. | readOnly, idempotent |
 | `find_stale_cis` | CIs not updated by Discovery (or any source) in a configurable number of days. | readOnly, idempotent |
-| `find_incomplete_cis` | CIs missing mandatory or recommended attributes for their class. | readOnly, idempotent |
-| `cmdb_health_summary` | Aggregate health metrics: total CIs by class, orphan count, duplicate count, stale count, completeness score. | readOnly, idempotent |
+| `cmdb_health_summary` | Aggregate health metrics: total CIs by class, orphan count, duplicate count, stale count. | readOnly, idempotent |
 
 ### 5.4 CI Mutations
 
@@ -161,26 +160,21 @@ Data Model Navigator metadata (class hierarchy, field definitions, relationship 
 | Tool | Description | Annotations |
 |---|---|---|
 | `preview_ci_update` | Show what will change before executing. Returns diff. | readOnly, idempotent |
-| `confirm_ci_update` | Execute a previously previewed update by confirmation token. | destructive, NOT idempotent |
+| `confirm_ci_update` | Execute a previously previewed update by confirmation token. | destructive, idempotent (via `_completed_ops` cache) |
 | `preview_ci_create` | Show the record that will be created with defaults filled in. | readOnly, idempotent |
-| `confirm_ci_create` | Execute a previously previewed creation. | destructive, NOT idempotent |
-| `preview_relationship_create` | Preview adding a relationship between two CIs. | readOnly, idempotent |
-| `confirm_relationship_create` | Execute relationship creation. | destructive, NOT idempotent |
+| `confirm_ci_create` | Execute a previously previewed creation. | destructive, idempotent (via `_completed_ops` cache) |
 
 ### 5.5 Configurables & Scripts
 
-All tools return full script bodies with credential redaction applied.
+Detail tools return script bodies with credential redaction applied. `analyze_configurables` returns aggregate counts only.
 
 | Tool | Description | Annotations |
 |---|---|---|
 | `get_business_rules` | Business rules for a given table (name, when, order, conditions, script). | readOnly, idempotent |
 | `get_flows` | Flow Designer flows, optionally filtered by trigger table. | readOnly, idempotent |
 | `get_client_scripts` | Client scripts for a table (type, field, script). | readOnly, idempotent |
-| `get_script_includes` | Script includes, filterable by name. | readOnly, idempotent |
-| `get_transform_maps` | Transform maps for CMDB import sources. | readOnly, idempotent |
-| `get_scheduled_jobs` | Scheduled script executions related to CMDB. | readOnly, idempotent |
 | `get_acls` | ACL rules for a given table or field. | readOnly, idempotent |
-| `analyze_configurables` | For a given CMDB table, return all touching configurables (BRs, flows, client scripts, ACLs) in one call. | readOnly, idempotent |
+| `analyze_configurables` | For a given CMDB table, count all touching configurables (BRs, flows, client scripts, ACLs) in one call. | readOnly, idempotent |
 
 ### 5.6 Discovery
 
@@ -189,7 +183,6 @@ All tools return full script bodies with credential redaction applied.
 | `list_discovery_schedules` | Active Discovery schedules with status and last run time. | readOnly, idempotent |
 | `get_discovery_status` | Status of a specific Discovery schedule (running, completed, errors). | readOnly, idempotent |
 | `get_discovery_errors` | Recent Discovery errors for a schedule or CI class. | readOnly, idempotent |
-| `get_discovery_log` | Discovery log entries for a specific CI or IP range. | readOnly, idempotent |
 
 ### 5.7 Identification & Reconciliation
 
@@ -211,6 +204,7 @@ All tools return full script bodies with credential redaction applied.
 
 | Tool | Description | Annotations |
 |---|---|---|
+| `check_connection` | Verify ServiceNow connectivity, authenticated user, and roles. | readOnly, idempotent |
 | `refresh_metadata_cache` | Force-refresh cached Data Model Navigator metadata. | NOT readOnly, idempotent |
 
 ---
@@ -246,7 +240,7 @@ Input: CI name or sys_id. Runs: `get_ci_details` → `get_ci_relationships` → 
 
 ### 7.4 Audit Configurables
 
-Input: CMDB table name. Runs: `get_business_rules` → `get_flows` → `get_client_scripts` → `get_acls` → `get_transform_maps` → produces inventory with potential conflict analysis (e.g., multiple BRs on the same event with conflicting logic).
+Input: CMDB table name. Runs: `get_business_rules` → `get_flows` → `get_client_scripts` → `get_acls` → produces inventory with potential conflict analysis (e.g., multiple BRs on the same event with conflicting logic).
 
 ---
 
@@ -255,18 +249,14 @@ Input: CMDB table name. Runs: `get_business_rules` → `get_flows` → `get_clie
 ### 8.1 Error Classification
 
 ```
-ClientError (4xx from ServiceNow)
-├── ValidationError — bad query syntax, missing required fields
-├── PermissionError — ACL denied, insufficient role
-├── NotFoundError — sys_id or table doesn't exist
-└── RateLimitError — HTTP 429, includes retry_after
-
-ServerError (5xx from ServiceNow)
-├── InstanceError — ServiceNow instance issue
-└── TimeoutError — request exceeded timeout
-
-ConfigError (local)
-├── AuthError — OAuth grant failed, bad credentials
+ServiceNowError (base class)
+├── SNValidationError — bad query syntax, missing required fields (400)
+├── SNPermissionError — ACL denied, insufficient role (403)
+├── NotFoundError — sys_id or table doesn't exist (404)
+├── RateLimitError — HTTP 429, includes retry_after
+├── InstanceError — ServiceNow instance issue (5xx)
+├── SNTimeoutError — request exceeded timeout
+├── AuthError — OAuth grant failed, bad credentials (401)
 └── PluginError — required plugin (Data Model Navigator) not installed
 ```
 
@@ -297,14 +287,15 @@ servicenow-cmdb-mcp/
 ├── src/
 │   └── servicenow_cmdb_mcp/
 │       ├── __init__.py
-│       ├── server.py            # FastMCP server setup, entry point
+│       ├── server.py            # FastMCP server setup, entry point + check_connection tool
 │       ├── client.py            # ServiceNow REST client (auth, requests, pagination)
 │       ├── config.py            # Pydantic settings, configuration
 │       ├── cache.py             # Metadata cache with TTL
 │       ├── redaction.py         # Credential pattern redaction
-│       ├── errors.py            # Structured error types and mapping
+│       ├── errors.py            # ServiceNowError base + structured error types
 │       ├── tools/
 │       │   ├── __init__.py
+│       │   ├── _utils.py        # Shared validators, pagination helpers, JSON serialization
 │       │   ├── queries.py       # CI query tools
 │       │   ├── relationships.py # Dependency and relationship tools
 │       │   ├── health.py        # CMDB health and troubleshooting tools
@@ -315,20 +306,24 @@ servicenow-cmdb-mcp/
 │       │   └── imports.py       # Data sources and import set tools
 │       ├── resources/
 │       │   ├── __init__.py
-│       │   └── schema.py        # Dynamic MCP Resources from Data Model Navigator
+│       │   └── schema.py        # Dynamic MCP Resources + refresh_metadata_cache tool
 │       └── prompts/
 │           ├── __init__.py
 │           └── workflows.py     # MCP Prompt definitions
 └── tests/
     ├── __init__.py
-    ├── conftest.py              # Shared fixtures, mock client
-    ├── test_client.py
-    ├── test_redaction.py
+    ├── conftest.py              # Shared fixtures
     ├── test_queries.py
     ├── test_relationships.py
     ├── test_health.py
     ├── test_mutations.py
-    └── test_configurables.py
+    ├── test_configurables.py
+    ├── test_discovery.py
+    ├── test_imports.py
+    ├── test_ire.py
+    ├── test_prompts.py
+    ├── test_schema_resources.py
+    └── test_server.py
 ```
 
 ---
@@ -385,3 +380,15 @@ For the MCP server to function, the target ServiceNow instance needs:
 - **Remote HTTP transport** for team deployment (deferred — STDIO only for now)
 - **Multi-instance** support (connect to dev/test/prod simultaneously)
 - **Event Management** integration (correlate CMDB CIs with alerts)
+
+### 13.1 Planned Tools (not yet implemented)
+
+| Tool | Domain | Description |
+|---|---|---|
+| `find_incomplete_cis` | Health | CIs missing mandatory or recommended attributes for their class. |
+| `preview_relationship_create` | Mutations | Preview adding a relationship between two CIs. |
+| `confirm_relationship_create` | Mutations | Execute relationship creation after preview. |
+| `get_script_includes` | Configurables | Script includes, filterable by name. |
+| `get_transform_maps` | Configurables | Transform maps for CMDB import sources. |
+| `get_scheduled_jobs` | Configurables | Scheduled script executions related to CMDB. |
+| `get_discovery_log` | Discovery | Discovery log entries for a specific CI or IP range. |
