@@ -7,6 +7,7 @@ import logging
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
@@ -26,15 +27,15 @@ VALID_DISCOVERY_STATES = {"Starting", "Active", "Completed", "Cancelled", "Error
 VALID_SEVERITIES = {"Error", "Warning", "Info"}
 
 
-def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
+def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
     """Register all discovery inspection tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def list_discovery_schedules(
         active_only: bool = True,
@@ -109,11 +110,11 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_discovery_status(
         schedule_name: str = "",
@@ -216,11 +217,11 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_discovery_errors(
         severity: Literal["", "Error", "Warning", "Info"] = "Error",

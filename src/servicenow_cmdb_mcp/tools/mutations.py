@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
@@ -86,7 +87,7 @@ class _PendingOperation:
         return time.monotonic() - self.created_at > _TOKEN_TTL
 
 
-def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
+def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
     """Register all CI mutation tools on the MCP server."""
 
     # In-memory store for pending operations, keyed by token
@@ -120,13 +121,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
                 del _completed_ops[t]
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
             # Idempotent w.r.t. ServiceNow — generates a new token internally
             # but has no external side effects.
-            "idempotentHint": True,
-        },
+            idempotentHint=True,
+        ),
     )
     async def preview_ci_update(
         sys_id: str,
@@ -250,12 +251,12 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": True,
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
             # Idempotent within 60s via _completed_ops cache — safe to retry
-            "idempotentHint": True,
-        },
+            idempotentHint=True,
+        ),
     )
     async def confirm_ci_update(
         token: str,
@@ -374,13 +375,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
             # Idempotent w.r.t. ServiceNow — generates a new token internally
             # but has no external side effects.
-            "idempotentHint": True,
-        },
+            idempotentHint=True,
+        ),
     )
     async def preview_ci_create(
         table: str,
@@ -463,12 +464,12 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
         })
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": True,
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
             # Idempotent within 60s via _completed_ops cache — safe to retry
-            "idempotentHint": True,
-        },
+            idempotentHint=True,
+        ),
     )
     async def confirm_ci_create(
         token: str,

@@ -8,6 +8,7 @@ import re
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
@@ -23,7 +24,6 @@ from servicenow_cmdb_mcp.tools._utils import (
     _safe_total,
     _validate_cmdb_table,
     _validate_sys_id,
-    _validate_table_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,15 +186,15 @@ async def fetch_class_description(
     return result
 
 
-def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: MetadataCache) -> None:
+def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: MetadataCache) -> None:
     """Register all CI query tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def search_cis(
         ci_class: str = "cmdb_ci",
@@ -296,11 +296,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def query_cis_raw(
         table: str,
@@ -384,11 +384,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_ci_details(
         sys_id: str,
@@ -489,11 +489,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def count_cis(
         table: str = "cmdb_ci",
@@ -574,11 +574,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def list_ci_classes(
         parent_class: str = "cmdb_ci",
@@ -663,11 +663,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def describe_ci_class(
         class_name: str,
@@ -722,11 +722,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient, cache: Metadata
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def suggest_table(
         description: str,

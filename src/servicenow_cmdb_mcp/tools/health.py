@@ -7,6 +7,7 @@ import logging
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import ServiceNowError
@@ -55,15 +56,15 @@ def _parse_agg_groups(agg_result: dict[str, Any], empty_label: str = "unknown") 
     return groups
 
 
-def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
+def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
     """Register all CMDB health tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def find_orphan_cis(
         ci_class: str = "cmdb_ci",
@@ -219,11 +220,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def find_duplicate_cis(
         ci_class: str = "cmdb_ci",
@@ -354,11 +355,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def find_stale_cis(
         ci_class: str = "cmdb_ci",
@@ -440,11 +441,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def cmdb_health_summary(
         ci_class: str = "cmdb_ci",

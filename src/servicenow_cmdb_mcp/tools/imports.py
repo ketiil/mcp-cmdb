@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
@@ -23,15 +24,15 @@ from servicenow_cmdb_mcp.tools._utils import (
 logger = logging.getLogger(__name__)
 
 
-def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
+def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
     """Register all import inspection tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def list_data_sources(
         target_table: str = "",
@@ -120,11 +121,11 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_import_set_runs(
         table_name: str = "",
@@ -230,11 +231,11 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_transform_errors(
         target_table: str = "",

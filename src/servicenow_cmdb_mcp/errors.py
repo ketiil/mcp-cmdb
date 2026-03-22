@@ -149,10 +149,16 @@ STATUS_CODE_MAP: dict[int, type[ServiceNowError]] = {
 
 def error_from_status(status_code: int, message: str, retry_after: int | None = None) -> ServiceNowError:
     """Create the appropriate error type from an HTTP status code."""
+    if status_code == 400:
+        return SNValidationError(message)
+    if status_code == 401:
+        return AuthError(message)
+    if status_code == 403:
+        return SNPermissionError(message)
+    if status_code == 404:
+        return NotFoundError(message)
     if status_code == 429:
         return RateLimitError(message, retry_after=retry_after)
-    if status_code in STATUS_CODE_MAP:
-        return STATUS_CODE_MAP[status_code](message)
     if 500 <= status_code < 600:
         return InstanceError(message)
     return ServiceNowError(

@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import ServiceNowError
@@ -26,15 +27,15 @@ from servicenow_cmdb_mcp.tools._utils import (
 logger = logging.getLogger(__name__)
 
 
-def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
+def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
     """Register all IRE inspection tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_identification_rules(
         table: str = "",
@@ -124,11 +125,11 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_reconciliation_rules(
         table: str = "",
@@ -219,11 +220,11 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient) -> None:
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def explain_duplicate(
         sys_id_a: str,

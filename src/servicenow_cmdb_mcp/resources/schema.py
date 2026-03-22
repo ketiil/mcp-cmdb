@@ -206,7 +206,7 @@ async def _do_fetch_instance_metadata(
 
 
 def register_schema_resources(
-    mcp: FastMCP, client: ServiceNowClient, cache: MetadataCache
+    mcp: FastMCP, client: ServiceNowClient | None, cache: MetadataCache
 ) -> None:
     """Register MCP Resources and the refresh_metadata_cache utility tool."""
 

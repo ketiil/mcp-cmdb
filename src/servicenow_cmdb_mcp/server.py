@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient
@@ -54,11 +55,11 @@ def create_app() -> FastMCP:
     # Registered first so agents can verify connectivity before any workflow.
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def check_connection() -> str:
         """Check connectivity and authentication to the ServiceNow instance.

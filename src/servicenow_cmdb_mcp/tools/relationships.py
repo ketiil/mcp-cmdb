@@ -7,6 +7,7 @@ import logging
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
@@ -222,15 +223,15 @@ async def _fetch_relationships(
     return results
 
 
-def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: MetadataCache) -> None:
+def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: MetadataCache) -> None:
     """Register all relationship and dependency tools on the MCP server."""
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_ci_relationships(
         ci_sys_id: str,
@@ -267,6 +268,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         logger.info("get_ci_relationships: ci=%s direction=%s", ci_sys_id, direction)
         if err := _require_client(client):
             return err
+        assert client is not None
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -310,11 +312,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_dependency_tree(
         ci_sys_id: str,
@@ -353,6 +355,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         logger.info("get_dependency_tree: ci=%s direction=%s depth=%d", ci_sys_id, direction, max_depth)
         if err := _require_client(client):
             return err
+        assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
             return _json({
@@ -440,11 +443,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def list_relationship_types(
         limit: int = 50,
@@ -469,6 +472,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         logger.info("list_relationship_types")
         if err := _require_client(client):
             return err
+        assert client is not None
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         cache_key = "rel_types:all"
@@ -523,11 +527,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def find_related_cis(
         ci_sys_id: str,
@@ -556,6 +560,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         logger.info("find_related_cis: ci=%s type=%s direction=%s", ci_sys_id, rel_type, direction)
         if err := _require_client(client):
             return err
+        assert client is not None
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -631,11 +636,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
             return e.to_json()
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
     )
     async def get_impact_summary(
         ci_sys_id: str,
@@ -672,6 +677,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient, cache: M
         logger.info("get_impact_summary: ci=%s depth=%d", ci_sys_id, max_depth)
         if err := _require_client(client):
             return err
+        assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
             return _json({
