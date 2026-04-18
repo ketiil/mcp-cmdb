@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +13,7 @@ from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
+    _DANGEROUS_QUERY_PATTERNS,
     _clamp_limit,
     _clamp_offset,
     _extract_agg_count,
@@ -32,14 +32,6 @@ logger = logging.getLogger(__name__)
 
 # Valid operational_status values (string codes used in ServiceNow API)
 VALID_OP_STATUS = {"1", "2", "3", "4", "5", "6", "7", "8"}
-
-# Patterns blocked in raw encoded queries to prevent server-side script injection.
-# ServiceNow evaluates javascript: expressions in queries — block user-supplied ones.
-_DANGEROUS_QUERY_PATTERNS = re.compile(
-    r"javascript:|gs\.(include|sleep|log|print|exec|eval|import)|"
-    r"Packages\.|java\.|eval\(|new\s+Function",
-    re.IGNORECASE,
-)
 
 # Default fields returned for CI list queries
 _CI_LIST_FIELDS = [

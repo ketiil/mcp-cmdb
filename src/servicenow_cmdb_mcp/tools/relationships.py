@@ -782,6 +782,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 result["traversal_errors"] = traversal_errors
             if filter_set:
                 result["class_filter"] = sorted(filter_set)
+                # Show total traversed so user understands the full blast radius
+                result["total_traversed"] = len(seen_impacted) - 1  # exclude root CI
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -853,8 +855,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             source_sys_id: ("", None),
         }
         visited: set[str] = {source_sys_id}
-        queue: deque[str] = deque()
-        queue.append(source_sys_id)
+        queue: deque[tuple[str, int]] = deque()
+        queue.append((source_sys_id, 0))
 
         try:
             timed_out = False
@@ -863,13 +865,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 while queue:
                     if len(visited) >= _MAX_TRAVERSAL_NODES:
                         break
-                    current_id = queue.popleft()
-                    # Depth check: count hops from source to current_id via parent_map
-                    depth = 0
-                    probe = current_id
-                    while parent_map[probe][0]:
-                        probe = parent_map[probe][0]
-                        depth += 1
+                    current_id, depth = queue.popleft()
                     if depth >= max_depth:
                         continue
 
@@ -885,7 +881,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                         if neighbor_id == target_sys_id:
                             return True
                         visited.add(neighbor_id)
-                        queue.append(neighbor_id)
+                        queue.append((neighbor_id, depth + 1))
                 return False
 
             try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -13,7 +12,7 @@ from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.config import Settings
 from servicenow_cmdb_mcp.errors import ServiceNowError
-from servicenow_cmdb_mcp.tools._utils import _json, _validate_table_name, _validation_error
+from servicenow_cmdb_mcp.tools._utils import _DANGEROUS_QUERY_PATTERNS, _json, _validate_table_name, _validation_error
 from servicenow_cmdb_mcp.prompts.workflows import register_prompts
 from servicenow_cmdb_mcp.resources.schema import register_schema_resources
 from servicenow_cmdb_mcp.tools.configurables import register_configurable_tools
@@ -27,12 +26,6 @@ from servicenow_cmdb_mcp.tools.relationships import register_relationship_tools
 
 logger = logging.getLogger(__name__)
 
-# Patterns blocked in diagnostic tool queries (same as queries.py).
-_DANGEROUS_QUERY_PATTERNS = re.compile(
-    r"javascript:|gs\.(include|sleep|log|print|exec|eval|import)|"
-    r"Packages\.|java\.|eval\(|new\s+Function",
-    re.IGNORECASE,
-)
 
 
 def create_app() -> FastMCP:

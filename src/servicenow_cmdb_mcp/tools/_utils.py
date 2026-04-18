@@ -20,6 +20,14 @@ _MAX_LIMIT = 1000
 # Rejects Unicode homoglyphs that str.isidentifier() would accept.
 _TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# Patterns blocked in encoded queries to prevent server-side script injection.
+# Used by query_cis_raw and _diag_probe_table.
+_DANGEROUS_QUERY_PATTERNS = re.compile(
+    r"javascript:|gs\.(include|sleep|log|print|exec|eval|import)|"
+    r"Packages\.|java\.|eval\(|new\s+Function",
+    re.IGNORECASE,
+)
+
 
 def _json(result: Any) -> str:
     """Serialize a result to JSON for tool responses."""
