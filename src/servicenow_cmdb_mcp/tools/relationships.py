@@ -812,3 +812,135 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
+    )
+    async def find_ci_path(
+        source_sys_id: str,
+        target_sys_id: str,
+        max_depth: int = 5,
+    ) -> str:
+        """Find the shortest relationship path between two CIs.
+
+        Performs a bidirectional BFS (both upstream and downstream at each hop)
+        to find the shortest chain of relationships connecting two CIs. Useful
+        when you know both endpoints and want to understand how they are related
+        without traversing the full tree.
+
+        Prerequisites: Use search_cis to find both CI sys_ids first.
+
+        Performance: BFS explores breadth-first with a limit of 10 relationships
+        per node per direction. A hard 60-second timeout applies.
+
+        Example: find_ci_path(source_sys_id="abc...", target_sys_id="def...", max_depth=4)
+
+        Args:
+            source_sys_id: The sys_id of the starting CI.
+            target_sys_id: The sys_id of the target CI to find a path to.
+            max_depth: Maximum hops to search (1-10, default 5). Higher values
+                      find longer paths but issue more API calls.
+
+        Returns:
+            JSON object with "found" (bool), "path" (ordered list of nodes from
+            source to target, each with "ci" details and "relationship_type"),
+            and "hops" (number of relationships in the path).
+        """
+        logger.info("find_ci_path: source=%s target=%s depth=%d", source_sys_id, target_sys_id, max_depth)
+        if err := _require_client(client):
+            return err
+        assert client is not None
+
+        for label, sid in [("source_sys_id", source_sys_id), ("target_sys_id", target_sys_id)]:
+            if err := _validate_sys_id(sid):
+                return _json({
+                    "error": True,
+                    "category": "ValidationError",
+                    "message": f"Invalid {label}: {err}",
+                    "suggestion": "Provide a valid CI sys_id.",
+                    "retry": False,
+                })
+
+        max_depth = max(1, min(max_depth, 10))
+
+        if source_sys_id == target_sys_id:
+            ci_info = await _resolve_ci(client, source_sys_id)
+            return _json({
+                "found": True,
+                "hops": 0,
+                "path": [{"ci": ci_info}],
+                "suggested_next": "Source and target are the same CI.",
+            })
+
+        from collections import deque
+
+        visited: set[str] = {source_sys_id}
+        queue: deque[tuple[str, list[tuple[str, dict[str, str] | None]]]] = deque()
+        queue.append((source_sys_id, [(source_sys_id, None)]))
+
+        try:
+            timed_out = False
+
+            async def bfs() -> list[tuple[str, dict[str, str] | None]] | None:
+                while queue:
+                    current_id, path = queue.popleft()
+                    if len(path) > max_depth + 1:
+                        continue
+
+                    rels = await _fetch_relationships(
+                        client, cache, current_id, "both", limit=10,
+                    )
+                    for rel in rels:
+                        neighbor_id = rel["related_ci"]["sys_id"]
+                        if neighbor_id in visited:
+                            continue
+                        rel_type = rel["relationship_type"]
+                        new_path = path + [(neighbor_id, rel_type)]
+                        if neighbor_id == target_sys_id:
+                            return new_path
+                        visited.add(neighbor_id)
+                        if len(new_path) <= max_depth + 1:
+                            queue.append((neighbor_id, new_path))
+                return None
+
+            try:
+                found_path = await asyncio.wait_for(bfs(), timeout=_TRAVERSAL_TIMEOUT)
+            except asyncio.TimeoutError:
+                timed_out = True
+                found_path = None
+
+            if found_path:
+                path_nodes: list[dict[str, Any]] = []
+                for sys_id, rel_type in found_path:
+                    ci_info = await _resolve_ci(client, sys_id)
+                    node: dict[str, Any] = {"ci": ci_info}
+                    if rel_type:
+                        node["relationship_type"] = rel_type
+                    path_nodes.append(node)
+
+                return _json({
+                    "found": True,
+                    "hops": len(found_path) - 1,
+                    "path": path_nodes,
+                    "nodes_visited": len(visited),
+                    "suggested_next": "Use get_ci_details(sys_id) to inspect any node, or get_dependency_tree(sys_id) for the full tree.",
+                })
+            else:
+                result: dict[str, Any] = {
+                    "found": False,
+                    "hops": 0,
+                    "path": [],
+                    "nodes_visited": len(visited),
+                    "max_depth_searched": max_depth,
+                    "suggested_next": "Try increasing max_depth, or the CIs may not be connected.",
+                }
+                if timed_out:
+                    result["timed_out"] = True
+                    result["message"] = f"Search timed out after {_TRAVERSAL_TIMEOUT}s. Try reducing max_depth."
+                return _json(result)
+        except ServiceNowError as e:
+            return e.to_json()

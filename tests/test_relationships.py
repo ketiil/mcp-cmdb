@@ -791,3 +791,102 @@ class TestGetImpactSummary:
         assert result["total_impacted"] == 1
         assert "cmdb_ci_disk" not in result["impacted_by_class"]
         assert result["impacted_by_class"]["cmdb_ci_server"] == 1
+
+
+# ── find_ci_path ───────────────────────────────────────────────────
+
+class TestFindCiPath:
+    @pytest.mark.asyncio
+    async def test_empty_source_sys_id(self, tools):
+        result = _parse(await tools["find_ci_path"]("", CI_B))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+
+    @pytest.mark.asyncio
+    async def test_empty_target_sys_id(self, tools):
+        result = _parse(await tools["find_ci_path"](CI_A, ""))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+
+    @pytest.mark.asyncio
+    async def test_same_source_and_target(self, mock_client, tools):
+        mock_client.get_record.return_value = _ci_record(CI_A, "Server-A")
+        result = _parse(await tools["find_ci_path"](CI_A, CI_A))
+        assert result["found"] is True
+        assert len(result["path"]) == 1
+        assert result["path"][0]["ci"]["sys_id"] == CI_A
+
+    @pytest.mark.asyncio
+    async def test_direct_connection(self, mock_client, tools):
+        """A -> B direct relationship should return a 2-node path."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                if f"child={CI_A}" in query:
+                    return [_rel_record(parent=CI_B, child=CI_A)]
+                if f"parent={CI_A}" in query:
+                    return [_rel_record(parent=CI_A, child=CI_B)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["find_ci_path"](CI_A, CI_B))
+        assert result["found"] is True
+        assert len(result["path"]) == 2
+        assert result["path"][0]["ci"]["sys_id"] == CI_A
+        assert result["path"][1]["ci"]["sys_id"] == CI_B
+
+    @pytest.mark.asyncio
+    async def test_no_path_found(self, mock_client, tools):
+        """Disconnected CIs should return found=False."""
+        mock_client.get_records.return_value = []
+        mock_client.get_record.side_effect = lambda **kw: (
+            _ci_record(kw.get("sys_id", ""), "CI")
+        )
+
+        result = _parse(await tools["find_ci_path"](CI_A, CI_B, max_depth=3))
+        assert result["found"] is False
+        assert result["path"] == []
+
+    @pytest.mark.asyncio
+    async def test_two_hop_path(self, mock_client, tools):
+        """A -> B -> C should return a 3-node path."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "A"),
+            CI_B: _ci_record(CI_B, "B"),
+            CI_C: _ci_record(CI_C, "C"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci":
+                if f"child={CI_A}" in query or f"parent={CI_A}" in query:
+                    return [_rel_record(parent=CI_A, child=CI_B, sys_id="r1")]
+                if f"child={CI_B}" in query or f"parent={CI_B}" in query:
+                    return [_rel_record(parent=CI_B, child=CI_C, sys_id="r2")]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["find_ci_path"](CI_A, CI_C, max_depth=5))
+        assert result["found"] is True
+        assert len(result["path"]) == 3
+        path_ids = [n["ci"]["sys_id"] for n in result["path"]]
+        assert path_ids == [CI_A, CI_B, CI_C]
