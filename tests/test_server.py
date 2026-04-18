@@ -38,13 +38,18 @@ def mock_settings():
 def mock_client():
     client = AsyncMock()
     client.base_url = "https://test.service-now.com"
-    client.get = AsyncMock(return_value={"result": [
-        {
-            "user_name": "admin",
-            "sys_id": "abc123",
-            "roles": "admin,itil,cmdb_read",
-        }
-    ]})
+
+    # check_connection makes two get() calls:
+    # 1. sys_user lookup (returns user record)
+    # 2. sys_user_has_role lookup (returns role records)
+    client.get = AsyncMock(side_effect=[
+        {"result": [{"user_name": "admin", "sys_id": "abc123"}]},
+        {"result": [
+            {"role": "admin"},
+            {"role": "itil"},
+            {"role": "cmdb_read"},
+        ]},
+    ])
     return client
 
 
@@ -94,7 +99,7 @@ class TestCheckConnection:
     @pytest.mark.asyncio
     async def test_connected_user_not_found(self, app_with_client):
         tools, mock_client = app_with_client
-        mock_client.get.return_value = {"result": []}
+        mock_client.get = AsyncMock(return_value={"result": []})
         result = _parse(await tools["check_connection"]())
         assert result["connected"] is True
         assert result["roles"] == []
@@ -119,9 +124,10 @@ class TestCheckConnection:
     @pytest.mark.asyncio
     async def test_empty_roles_string(self, app_with_client):
         tools, mock_client = app_with_client
-        mock_client.get.return_value = {"result": [
-            {"user_name": "admin", "sys_id": "abc123", "roles": ""}
-        ]}
+        mock_client.get = AsyncMock(side_effect=[
+            {"result": [{"user_name": "admin", "sys_id": "abc123"}]},
+            {"result": []},  # no roles assigned
+        ])
         result = _parse(await tools["check_connection"]())
         assert result["connected"] is True
         assert result["roles"] == []
