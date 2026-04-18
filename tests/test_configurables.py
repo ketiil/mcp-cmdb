@@ -477,9 +477,9 @@ class TestGetScriptIncludes:
     @pytest.mark.asyncio
     async def test_name_filter_in_query(self, mock_client, tools):
         mock_client.get_records.return_value = []
-        await tools["get_script_includes"](name_filter="DNB_CMDB")
+        await tools["get_script_includes"](name_filter="CMDBUtil")
         call = mock_client.get_records.call_args
-        assert "nameLIKEDNB_CMDB" in call.kwargs["query"]
+        assert "nameLIKECMDBUtil" in call.kwargs["query"]
 
     @pytest.mark.asyncio
     async def test_active_only_filter(self, mock_client, tools):

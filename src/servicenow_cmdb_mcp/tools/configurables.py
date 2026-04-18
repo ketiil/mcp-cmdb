@@ -252,13 +252,13 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         Examples:
             get_flows(table="cmdb_ci_server")
             get_flows(name_filter="decommission")
-            get_flows(name_filter="DNB", active_only=False)
+            get_flows(name_filter="Payroll", active_only=False)
 
         Args:
             table: Filter flows whose internal_name contains this value
                   (e.g. cmdb_ci_server). Optional if name_filter is provided.
             name_filter: Filter flows whose display name contains this value
-                        (e.g. "decommission", "DNB"). Optional if table is provided.
+                        (e.g. "decommission", "Payroll"). Optional if table is provided.
             active_only: If True, return only active flows. Defaults to True.
             limit: Maximum flows to return (1-1000, default 25).
             offset: Pagination offset.
@@ -554,7 +554,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
 
         Examples:
             get_script_includes(name_filter="CMDB")
-            get_script_includes(name_filter="DNB_CMDB", include_scripts=True)
+            get_script_includes(name_filter="DecommissionUtils", include_scripts=True)
             get_script_includes(name_filter="Util", active_only=False, limit=50)
 
         Args:
