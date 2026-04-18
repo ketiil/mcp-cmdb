@@ -233,44 +233,59 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         ),
     )
     async def get_flows(
-        table: str,
+        table: str = "",
+        name_filter: str = "",
         active_only: bool = True,
         limit: int = 25,
         offset: int = 0,
     ) -> str:
-        """Get Flow Designer flows related to a CMDB table.
+        """Get Flow Designer flows related to a CMDB table or matching a name.
 
-        Searches sys_hub_flow for flows whose internal_name references the
-        specified table. Note: flow trigger/action details are stored in
-        sub-tables, so this provides an overview — use the ServiceNow UI
-        for full flow logic inspection.
+        Searches sys_hub_flow by internal_name (CONTAINS table) and/or display
+        name (CONTAINS name_filter). At least one of table or name_filter must
+        be provided. Note: flow trigger/action details are stored in sub-tables,
+        so this provides an overview — use the ServiceNow UI for full flow logic.
 
-        Limitation: Matches flows by internal_name CONTAINS table — flows
-        referencing the table indirectly (e.g. via subflow or action) may
-        not appear. If no results are returned, verify in the ServiceNow
-        Flow Designer UI directly.
+        Examples:
+            get_flows(table="cmdb_ci_server")
+            get_flows(name_filter="decommission")
+            get_flows(name_filter="DNB", active_only=False)
 
         Args:
-            table: The CMDB table to find flows for (e.g. cmdb_ci_server).
+            table: Filter flows whose internal_name contains this value
+                  (e.g. cmdb_ci_server). Optional if name_filter is provided.
+            name_filter: Filter flows whose display name contains this value
+                        (e.g. "decommission", "DNB"). Optional if table is provided.
             active_only: If True, return only active flows. Defaults to True.
             limit: Maximum flows to return (1-1000, default 25).
             offset: Pagination offset.
 
         Returns:
-            JSON object with "table", "count", and "flows" list containing
-            name, description, active status, and run_as.
+            JSON object with "count", and "flows" list containing
+            name, internal_name, description, active status, and run_as.
         """
-        logger.info("get_flows: table=%s", table)
+        logger.info("get_flows: table=%s name_filter=%s", table, name_filter)
         if err := _require_client(client):
             return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
-        if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
+        if not table and not name_filter:
+            return _validation_error(
+                "At least one of 'table' or 'name_filter' must be provided.",
+                "Provide a table name to find flows by internal_name, or a name_filter to search by display name.",
+            )
+
+        if table:
+            if err := _validate_table_name(table):
+                return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
-            query_parts = [f"internal_nameCONTAINS{table}"]
+            query_parts: list[str] = []
+            if table:
+                query_parts.append(f"internal_nameCONTAINS{table}")
+            if name_filter:
+                query_parts.append(f"nameLIKE{name_filter}")
             if active_only:
                 query_parts.append("active=true")
             query = "^".join(query_parts)
@@ -303,11 +318,14 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             ]
 
             result: dict[str, Any] = {
-                "table": table,
                 "count": len(flows),
                 "flows": flows,
-                "suggested_next": f"Use get_business_rules(table='{table}') for server-side logic, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full overview.",
+                "suggested_next": "Use get_business_rules(table) for server-side logic, get_acls(table) for access controls, or analyze_configurables(table) for a full overview.",
             }
+            if table:
+                result["table"] = table
+            if name_filter:
+                result["name_filter"] = name_filter
             result.update(_pagination_metadata(total, offset, len(flows), limit))
             return _json(result)
         except ServiceNowError as e:
