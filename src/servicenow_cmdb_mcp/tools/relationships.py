@@ -681,6 +681,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
     async def get_impact_summary(
         ci_sys_id: str,
         max_depth: int = 3,
+        class_filter: list[str] | None = None,
     ) -> str:
         """Produce a summary of services and applications impacted by a given CI.
 
@@ -704,6 +705,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             ci_sys_id: The sys_id of the CI to assess impact for (32-character hex string
                       from search_cis).
             max_depth: How deep to traverse downstream dependencies (1-5, default 3).
+            class_filter: Optional list of sys_class_name values to include in impact
+                         counts and results. Traversal still visits all CIs (to find
+                         matching descendants), but only matching classes appear in
+                         totals and lists. When None or empty, all classes are included.
 
         Returns:
             JSON object with "ci" (the source CI), "total_impacted" count,
@@ -725,6 +730,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             })
 
         max_depth = max(1, min(max_depth, 5))
+        filter_set = set(class_filter) if class_filter else set()
 
         # Classes considered business-critical for impact reporting
         service_classes = {
@@ -757,9 +763,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                     related_id = related["sys_id"]
                     if related_id not in seen_impacted:
                         seen_impacted.add(related_id)
-                        all_impacted.append(related)
-                        if related.get("sys_class_name", "") in service_classes:
-                            impacted_services.append(related)
+                        related_cls = related.get("sys_class_name", "")
+                        if not filter_set or related_cls in filter_set:
+                            all_impacted.append(related)
+                            if related_cls in service_classes:
+                                impacted_services.append(related)
                     if related_id not in visited:
                         await collect(related_id, depth + 1)
             except ServiceNowError as e:
@@ -799,6 +807,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             if traversal_errors:
                 result["is_partial"] = True
                 result["traversal_errors"] = traversal_errors
+            if filter_set:
+                result["class_filter"] = sorted(filter_set)
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()

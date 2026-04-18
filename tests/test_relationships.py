@@ -757,3 +757,37 @@ class TestGetImpactSummary:
         result = _parse(await tools["get_impact_summary"](CI_A, max_depth=3))
         # B, C, D — each counted exactly once
         assert result["total_impacted"] == 3
+
+    @pytest.mark.asyncio
+    async def test_class_filter_limits_impacted(self, mock_client, tools):
+        """class_filter should only count matching classes in the impact summary."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A", cls="cmdb_ci_server"),
+            CI_B: _ci_record(CI_B, "Disk-B", cls="cmdb_ci_disk"),
+            CI_C: _ci_record(CI_C, "Server-C", cls="cmdb_ci_server"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci" and f"parent={CI_A}" in query:
+                return [
+                    _rel_record(parent=CI_A, child=CI_B, sys_id="r1"),
+                    _rel_record(parent=CI_A, child=CI_C, sys_id="r2"),
+                ]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["get_impact_summary"](
+            CI_A, class_filter=["cmdb_ci_server"],
+        ))
+        # Only Server-C should be counted; Disk-B is filtered out of the results
+        assert result["total_impacted"] == 1
+        assert "cmdb_ci_disk" not in result["impacted_by_class"]
+        assert result["impacted_by_class"]["cmdb_ci_server"] == 1
