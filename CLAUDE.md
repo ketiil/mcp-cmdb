@@ -22,13 +22,14 @@ src/servicenow_cmdb_mcp/
 ├── tools/               # One module per domain, each exports register_*_tools(mcp, client[, cache])
 │   ├── _utils.py        # Shared validators, pagination helpers, JSON serialization
 │   ├── queries.py       # search_cis, query_cis_raw, get_ci_details, count_cis, suggest_table, list_ci_classes, describe_ci_class
-│   ├── relationships.py # get_ci_relationships, get_dependency_tree, get_impact_summary, list_relationship_types, find_related_cis
+│   ├── relationships.py # get_ci_relationships, get_dependency_tree, get_impact_summary, find_ci_path, list_relationship_types, find_related_cis
 │   ├── health.py        # find_orphan_cis, find_duplicate_cis, find_stale_cis, cmdb_health_summary
 │   ├── mutations.py     # preview_ci_update/create → confirm_ci_update/create (two-phase)
-│   ├── configurables.py # get_business_rules, get_flows, get_client_scripts, get_acls, get_script_includes, analyze_configurables
+│   ├── configurables.py # get_business_rules, get_flows, get_flow_details, get_client_scripts, get_acls, get_script_includes, analyze_configurables
 │   ├── discovery.py     # list_discovery_schedules, get_discovery_status, get_discovery_errors
 │   ├── ire.py           # get_identification_rules, get_reconciliation_rules, explain_duplicate
-│   └── imports.py       # list_data_sources, get_import_set_runs, get_transform_errors
+│   ├── imports.py       # list_data_sources, get_import_set_runs, get_transform_errors
+│   └── _tree_format.py  # ASCII tree rendering for dependency tree output
 ├── resources/schema.py  # Dynamic MCP Resources + refresh_metadata_cache tool
 └── prompts/workflows.py # MCP Prompts: Health Check, Impact Analysis, Troubleshoot CI, Audit Configurables
 ```
@@ -53,9 +54,6 @@ uv run mypy src/
 
 # Lint
 uv run ruff check src/
-
-# Fallback if uv run fails with "file in use" on Windows
-.venv/Scripts/python.exe -m pytest tests/ -v
 ```
 
 ## Coding Rules
@@ -161,7 +159,8 @@ Data Model Navigator data (class hierarchy, fields, relationship types) is cache
 CMDB core:     cmdb_ci, cmdb_rel_ci, cmdb_rel_type, cmdb_rel_type_suggest
 Schema:        sys_db_object, sys_dictionary, sys_documentation
 Scripts:       sys_script, sys_script_client, sys_script_include
-Flows:         sys_hub_flow
+Flows:         sys_hub_flow, sys_hub_flow_base (has label_cache with flow logic), sys_hub_step_instance, sys_hub_action_instance
+User/Roles:    sys_user, sys_user_has_role (query with inherited=false for direct roles)
 Transforms:    sys_transform_map, sys_import_set_row
 Discovery:     discovery_schedule, discovery_status, discovery_log
 IRE:           cmdb_ident_entry, cmdb_reconciliation_rule
@@ -182,6 +181,20 @@ ACLs:          sys_security_acl
 - `_validate_table_name(t)` — format-only (ASCII, no traversal). Use for tools that inspect metadata *about* tables (business rules, ACLs, flows on `incident`, `alm_asset`, etc.).
 - `_validate_cmdb_table(t)` — format + CMDB prefix restriction. Use for tools that query CI data directly (`search_cis`, `query_cis_raw`, `get_ci_details`, mutations).
 - `_validate_sys_id(s)` — hex alphanumeric, no traversal. Use for all sys_id parameters.
+
+## DRY Helpers (_utils.py)
+
+- `_validation_error(message, suggestion, suggested_next="")` — use instead of inline `_json({"error": True, "category": "ValidationError", ...})`.
+- `_not_found_error(message, suggestion, suggested_next="")` — same pattern for NotFoundError.
+- `_pagination_metadata(total, offset, page_len, limit)` — returns dict with `total_count`, `has_more`, `next_offset`. Use `result.update(...)`.
+- Sanitize `name_filter` params: block `^` to prevent encoded query injection.
+
+## Server Instructions
+
+The `instructions` parameter in `server.py` is injected into the LLM's system prompt by MCP clients.
+It contains workflow patterns, smart defaults, and disambiguation rules (~350 words).
+Keep it concise — it adds to context window consumption alongside tool schemas.
+Update it when adding new tools or changing recommended workflows.
 
 ## Reference
 
