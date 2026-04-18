@@ -391,6 +391,47 @@ class TestGetDependencyTree:
         ))
         assert len(result["tree"]["children"]) == 1
 
+    @pytest.mark.asyncio
+    async def test_format_ascii_tree(self, mock_client, tools):
+        """format='ascii_tree' should return a text tree, not JSON."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci" and f"child={CI_A}" in query:
+                return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        raw = await tools["get_dependency_tree"](CI_A, max_depth=2, format="ascii_tree")
+        # Should be parseable JSON wrapping a text field
+        result = _parse(raw)
+        assert "tree_text" in result
+        assert "Server-A" in result["tree_text"]
+        assert "Server-B" in result["tree_text"]
+        # Should NOT have the nested tree dict
+        assert "tree" not in result
+
+    @pytest.mark.asyncio
+    async def test_format_json_is_default(self, mock_client, tools):
+        """format='json' (default) should return the nested tree dict."""
+        mock_client.get_records.return_value = []
+        mock_client.get_record.return_value = _ci_record(CI_A, "Server-A")
+
+        result = _parse(await tools["get_dependency_tree"](CI_A, max_depth=1, format="json"))
+        assert "tree" in result
+        assert "tree_text" not in result
+
 
 # ── list_relationship_types ─────────────────────────────────────────
 

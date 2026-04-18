@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient, resolve_ref
 from servicenow_cmdb_mcp.errors import ServiceNowError
+from servicenow_cmdb_mcp.tools._tree_format import render_ascii_tree
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
@@ -324,6 +325,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         max_depth: int = 3,
         limit_per_level: int = 10,
         class_filter: list[str] | None = None,
+        format: Literal["json", "ascii_tree"] = "json",
     ) -> str:
         """Walk the dependency tree from a CI with configurable depth and direction.
 
@@ -354,6 +356,9 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                          don't match are still traversed (their children may match), but
                          they are collapsed out of the result. When None or empty, all
                          classes are included. Example: ["cmdb_ci_server", "cmdb_ci_linux_server"].
+            format: Output format. "json" (default) returns the nested tree structure.
+                   "ascii_tree" returns a pre-rendered text tree — much smaller, readable
+                   without post-processing, but loses sys_id and status detail.
 
         Returns:
             JSON tree structure with "ci" (root CI details), "depth", "direction", and
@@ -453,6 +458,22 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             if traversal_errors:
                 result["is_partial"] = True
                 result["traversal_errors"] = traversal_errors
+            if format == "ascii_tree":
+                ascii_result: dict[str, Any] = {
+                    "direction": direction,
+                    "max_depth": max_depth,
+                    "nodes_visited": len(visited),
+                    "tree_text": render_ascii_tree(tree),
+                    "suggested_next": result.get("suggested_next", ""),
+                }
+                if filter_set:
+                    ascii_result["class_filter"] = sorted(filter_set)
+                if timed_out:
+                    ascii_result["timed_out"] = True
+                if traversal_errors:
+                    ascii_result["is_partial"] = True
+                    ascii_result["traversal_errors"] = traversal_errors
+                return _json(ascii_result)
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
