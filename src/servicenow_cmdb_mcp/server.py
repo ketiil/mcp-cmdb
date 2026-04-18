@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -103,6 +104,7 @@ def create_app() -> FastMCP:
                     "sysparm_query": f"user_name={username}",
                     "sysparm_limit": "1",
                     "sysparm_fields": "user_name,sys_id,roles",
+                    "sysparm_display_value": "true",
                 },
             )
             records = response.get("result", [])
@@ -159,6 +161,31 @@ def main() -> None:
     )
     logger.info("Starting ServiceNow CMDB MCP server")
     app = create_app()
+
+    if sys.platform == "win32":
+        # On Windows, Python's TextIOWrapper with newline=None (the default) translates
+        # \n → \r\n on stdout.  The MCP NDJSON transport writes one JSON object per line;
+        # the extra \r turns each line into "json\r" which the Node.js MCP client (Claude
+        # Code) can't parse, causing "Failed to reconnect".
+        # Fix: override run_stdio_async to inject wrappers with newline="\n".
+        import io as _io
+        import anyio as _anyio
+        from mcp.server.stdio import stdio_server as _stdio_server
+
+        _mcp_server = app._mcp_server  # type: ignore[attr-defined]
+
+        async def _run_stdio_windows() -> None:
+            _stdin = _anyio.wrap_file(
+                _io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", newline="\n")
+            )
+            _stdout = _anyio.wrap_file(
+                _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
+            )
+            async with _stdio_server(stdin=_stdin, stdout=_stdout) as (_r, _w):
+                await _mcp_server.run(_r, _w, _mcp_server.create_initialization_options())
+
+        app.run_stdio_async = _run_stdio_windows  # type: ignore[method-assign]
+
     app.run(transport="stdio")
 
 
