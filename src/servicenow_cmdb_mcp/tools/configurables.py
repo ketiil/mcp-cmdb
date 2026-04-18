@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -16,9 +17,11 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _json,
+    _not_found_error,
     _pagination_metadata,
     _require_client,
     _safe_total,
+    _validate_sys_id,
     _validate_table_name,
     _validation_error,
 )
@@ -327,6 +330,105 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             if name_filter:
                 result["name_filter"] = name_filter
             result.update(_pagination_metadata(total, offset, len(flows), limit))
+            return _json(result)
+        except ServiceNowError as e:
+            return e.to_json()
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
+    )
+    async def get_flow_details(
+        sys_id: str,
+    ) -> str:
+        """Get detailed logic of a Flow Designer flow by sys_id.
+
+        Fetches the flow definition from sys_hub_flow_base and parses the
+        label_cache to extract trigger, steps, referenced tables, and data
+        flow. Use get_flows to find the flow sys_id first.
+
+        Prerequisites: Use get_flows(name_filter="...") to find the flow sys_id.
+
+        Examples:
+            get_flow_details(sys_id="abc123...")
+
+        Args:
+            sys_id: The sys_id of the flow (from get_flows results).
+
+        Returns:
+            JSON object with flow metadata (name, description, status, run_as)
+            and parsed steps showing the flow's trigger, actions, and data flow.
+        """
+        logger.info("get_flow_details: sys_id=%s", sys_id)
+        if err := _require_client(client):
+            return err
+
+        if err := _validate_sys_id(sys_id):
+            return _validation_error(
+                err,
+                "Provide a valid flow sys_id.",
+                "Use get_flows(name_filter='...') to find the flow sys_id.",
+            )
+
+        try:
+            record = await client.get_record(
+                table="sys_hub_flow_base",
+                sys_id=sys_id,
+                fields=[
+                    "sys_id", "name", "internal_name", "description", "active",
+                    "status", "run_as", "type", "label_cache",
+                    "sys_scope", "sys_created_by", "sys_updated_on",
+                ],
+            )
+
+            if not record:
+                return _not_found_error(
+                    f"Flow with sys_id '{sys_id}' not found.",
+                    "Verify the sys_id or use get_flows to search.",
+                    "Use get_flows(name_filter='...') to find available flows.",
+                )
+
+            # Parse label_cache into structured steps
+            steps: list[dict[str, Any]] = []
+            label_cache_raw = record.get("label_cache", "")
+            if label_cache_raw:
+                try:
+                    labels = json.loads(label_cache_raw)
+                    if isinstance(labels, list):
+                        for entry in labels:
+                            step: dict[str, str] = {
+                                "label": entry.get("label", ""),
+                                "type": entry.get("type", ""),
+                            }
+                            if entry.get("reference"):
+                                step["reference_table"] = entry["reference"]
+                            if entry.get("parent_table_name"):
+                                step["parent_table"] = entry["parent_table_name"]
+                            if entry.get("column_name"):
+                                step["column"] = entry["column_name"]
+                            steps.append(step)
+                except (json.JSONDecodeError, TypeError):
+                    steps = [{"error": "Could not parse label_cache"}]
+
+            result: dict[str, Any] = {
+                "sys_id": record.get("sys_id", ""),
+                "name": record.get("name", ""),
+                "internal_name": record.get("internal_name", ""),
+                "description": record.get("description", ""),
+                "active": record.get("active", ""),
+                "status": record.get("status", ""),
+                "run_as": record.get("run_as", ""),
+                "type": record.get("type", ""),
+                "sys_scope": record.get("sys_scope", ""),
+                "sys_created_by": record.get("sys_created_by", ""),
+                "sys_updated_on": record.get("sys_updated_on", ""),
+                "steps": steps,
+                "step_count": len(steps),
+                "suggested_next": "Use get_flows(name_filter='...') to find other flows, or get_business_rules(table) for server-side logic.",
+            }
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()

@@ -34,6 +34,7 @@ def _parse(json_str: str) -> dict:
 def mock_client() -> AsyncMock:
     client = AsyncMock()
     client.get_records = AsyncMock(return_value=[])
+    client.get_record = AsyncMock(return_value=None)
     client.get_aggregate = AsyncMock(return_value={"result": {"stats": {"count": "0"}}})
     return client
 
@@ -453,6 +454,84 @@ class TestGetScriptIncludes:
         await tools["get_script_includes"](active_only=True)
         call = mock_client.get_records.call_args
         assert "active=true" in call.kwargs["query"]
+
+
+# ── get_flow_details ────────────────────────────────────────────────
+
+
+class TestGetFlowDetails:
+    @pytest.mark.asyncio
+    async def test_invalid_sys_id(self, tools):
+        result = _parse(await tools["get_flow_details"](""))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, mock_client, tools):
+        mock_client.get_record.return_value = None
+        result = _parse(await tools["get_flow_details"]("a" * 32))
+        assert result["error"] is True
+        assert result["category"] == "NotFoundError"
+
+    @pytest.mark.asyncio
+    async def test_returns_parsed_steps(self, mock_client, tools):
+        label_cache = json.dumps([
+            {
+                "name": "Updated_1.table_name",
+                "label": "Trigger - Record Updated > Table",
+                "type": "table_name",
+                "reference": "cmdb_ci_server",
+            },
+            {
+                "name": "step_1.Record",
+                "label": "1 - Look Up Record > Change Request",
+                "type": "reference",
+                "reference": "change_request",
+                "parent_table_name": "change_request",
+                "column_name": "state",
+            },
+        ])
+        mock_client.get_record.return_value = {
+            "sys_id": "a" * 32,
+            "name": "Test Flow",
+            "internal_name": "test_flow",
+            "description": "A test flow",
+            "active": "true",
+            "status": "published",
+            "run_as": "system",
+            "type": "flow",
+            "label_cache": label_cache,
+            "sys_scope": "",
+            "sys_created_by": "admin",
+            "sys_updated_on": "2026-01-01",
+        }
+        result = _parse(await tools["get_flow_details"]("a" * 32))
+        assert result["name"] == "Test Flow"
+        assert result["step_count"] == 2
+        assert result["steps"][0]["label"] == "Trigger - Record Updated > Table"
+        assert result["steps"][0]["reference_table"] == "cmdb_ci_server"
+        assert result["steps"][1]["parent_table"] == "change_request"
+        assert result["steps"][1]["column"] == "state"
+
+    @pytest.mark.asyncio
+    async def test_empty_label_cache(self, mock_client, tools):
+        mock_client.get_record.return_value = {
+            "sys_id": "a" * 32,
+            "name": "Empty Flow",
+            "internal_name": "empty_flow",
+            "description": "",
+            "active": "true",
+            "status": "draft",
+            "run_as": "system",
+            "type": "flow",
+            "label_cache": "",
+            "sys_scope": "",
+            "sys_created_by": "admin",
+            "sys_updated_on": "2026-01-01",
+        }
+        result = _parse(await tools["get_flow_details"]("a" * 32))
+        assert result["step_count"] == 0
+        assert result["steps"] == []
 
 
 # ── analyze_configurables ──────────────────────────────────────────
