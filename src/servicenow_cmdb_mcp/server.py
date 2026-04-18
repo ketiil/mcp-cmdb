@@ -55,9 +55,38 @@ def create_app() -> FastMCP:
     client = ServiceNowClient(settings) if settings else None  # type: ignore[arg-type]
     cache = MetadataCache(ttl=settings.cache_ttl if settings else 3600)
 
+    _instructions = """ServiceNow CMDB MCP server. Query, analyze, and manage Configuration Items (CIs) in a ServiceNow CMDB instance.
+
+WORKFLOW PATTERNS:
+- Finding CIs: suggest_table(description) → search_cis(ci_class, display_value="true") → get_ci_details(sys_id)
+- Relationships: get_ci_relationships(sys_id) → get_dependency_tree(sys_id, format="ascii_tree")
+- Impact analysis: get_impact_summary(sys_id) or find_ci_path(source, target)
+- Health audit: cmdb_health_summary → find_orphan_cis / find_duplicate_cis / find_stale_cis
+- Investigating automation: get_business_rules(table) → get_script_includes(name_filter) → get_flows(name_filter) → get_flow_details(sys_id)
+
+WHEN THE USER IS VAGUE:
+- "show me servers" → use search_cis(ci_class="cmdb_ci_server", display_value="true", limit=10)
+- Unsure which table → use suggest_table(description) first, it returns ranked matches
+- Unsure which CI → use search_cis with name_filter, then let the user pick
+- "what's connected to X" → use get_ci_relationships(sys_id, direction="both")
+
+DEFAULTS TO APPLY:
+- Always use display_value="true" when presenting data to users (returns names instead of sys_ids)
+- Use display_value="all" when you need both the sys_id (for follow-up API calls) and the display name
+- Default to operational CIs (operational_status="1") unless the user asks for retired/all
+- Use format="ascii_tree" on get_dependency_tree when the user wants to visualize relationships
+- Use class_filter on tree traversals to reduce noise (e.g., show only servers, not disks and memory)
+
+IMPORTANT CONSTRAINTS:
+- This server connects to a single ServiceNow instance via a service account
+- Query tools are restricted to cmdb_* tables for security
+- CI mutations use a two-phase pattern: preview first, then confirm with a token
+- The service account's access depends on its assigned roles — if a tool returns PermissionError, the account may need additional roles
+- Script bodies returned by configurable tools are redacted for credentials"""
+
     mcp = FastMCP(
         "ServiceNow CMDB",
-        instructions="MCP server connecting Claude to ServiceNow CMDB via natural language",
+        instructions=_instructions,
     )
 
     # ── Health check tool ────────────────────────────────────────────────
