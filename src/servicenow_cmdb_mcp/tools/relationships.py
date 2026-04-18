@@ -26,7 +26,7 @@ from servicenow_cmdb_mcp.tools._utils import (
 logger = logging.getLogger(__name__)
 
 # Maximum wall-clock seconds for recursive traversals (dependency tree, impact)
-_TRAVERSAL_TIMEOUT = 30.0
+_TRAVERSAL_TIMEOUT = 60.0
 
 # Fields to return for CIs referenced in relationships
 _CI_REF_FIELDS = ["sys_id", "name", "sys_class_name", "operational_status"]
@@ -323,6 +323,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         direction: Literal["upstream", "downstream"] = "upstream",
         max_depth: int = 3,
         limit_per_level: int = 10,
+        class_filter: list[str] | None = None,
     ) -> str:
         """Walk the dependency tree from a CI with configurable depth and direction.
 
@@ -334,8 +335,9 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         Performance: API calls grow exponentially with max_depth — depth=3 with
         limit_per_level=10 can issue up to ~111 calls. Start with max_depth=2
         and increase only if needed. Reduce limit_per_level for wide graphs.
-        A hard 30-second timeout applies; on timeout only the root node is
+        A hard 60-second timeout applies; on timeout only the root node is
         returned (in-progress subtrees are discarded) with timed_out=true.
+
 
         Example: get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=2)
 
@@ -347,6 +349,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                       make more API calls. Capped at 5 to prevent runaway traversals.
             limit_per_level: Maximum CIs to follow at each level (default 10). Controls
                             breadth of the tree to avoid excessive API calls.
+            class_filter: Optional list of sys_class_name values to include in the tree.
+                         Only CIs matching these classes appear in the output. CIs that
+                         don't match are still traversed (their children may match), but
+                         they are collapsed out of the result. When None or empty, all
+                         classes are included. Example: ["cmdb_ci_server", "cmdb_ci_linux_server"].
 
         Returns:
             JSON tree structure with "ci" (root CI details), "depth", "direction", and
@@ -376,6 +383,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             })
 
         max_depth = max(1, min(max_depth, 5))
+        filter_set = set(class_filter) if class_filter else set()
         visited: set[str] = set()
         traversal_errors: list[str] = []
         # Mutable node registry so partial trees survive timeout cancellation.
@@ -402,7 +410,12 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                     if child_id not in visited:
                         child_node = await walk(child_id, depth + 1)
                         child_node["relationship_type"] = rel["relationship_type"]
-                        node["children"].append(child_node)
+                        if filter_set:
+                            child_cls = child_node["ci"].get("sys_class_name", "")
+                            if child_cls in filter_set or child_node["children"]:
+                                node["children"].append(child_node)
+                        else:
+                            node["children"].append(child_node)
             except ServiceNowError as e:
                 traversal_errors.append(f"Node {sys_id}: {e.message}")
 
@@ -433,6 +446,8 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 "tree": tree,
                 "suggested_next": "Use get_impact_summary(sys_id) for service impact, or get_ci_details(sys_id) to inspect a specific node.",
             }
+            if filter_set:
+                result["class_filter"] = sorted(filter_set)
             if timed_out:
                 result["timed_out"] = True
             if traversal_errors:
@@ -661,7 +676,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
 
         Performance: Traversal can issue many API calls for deeply connected CIs.
         Consider using max_depth=2 for initial assessment, then increasing if
-        needed. A hard 30-second timeout applies; on timeout, impact counts
+        needed. A hard 60-second timeout applies; on timeout, impact counts
         reflect only what was traversed before the deadline (timed_out=true).
 
         Args:

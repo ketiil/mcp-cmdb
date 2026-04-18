@@ -329,6 +329,68 @@ class TestGetDependencyTree:
         # Calls should be bounded
         assert call_count < 20  # Sanity: not spinning
 
+    @pytest.mark.asyncio
+    async def test_class_filter_prunes_tree(self, mock_client, tools):
+        """class_filter should only include matching classes in the tree."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A", cls="cmdb_ci_server"),
+            CI_B: _ci_record(CI_B, "Disk-B", cls="cmdb_ci_disk"),
+            CI_C: _ci_record(CI_C, "Server-C", cls="cmdb_ci_server"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci" and f"child={CI_A}" in query:
+                return [
+                    _rel_record(parent=CI_B, child=CI_A, sys_id="r1"),
+                    _rel_record(parent=CI_C, child=CI_A, sys_id="r2"),
+                ]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["get_dependency_tree"](
+            CI_A, max_depth=2, class_filter=["cmdb_ci_server"],
+        ))
+        tree = result["tree"]
+        assert tree["ci"]["sys_id"] == CI_A
+        # Only Server-C should appear, Disk-B is filtered out
+        assert len(tree["children"]) == 1
+        assert tree["children"][0]["ci"]["sys_class_name"] == "cmdb_ci_server"
+
+    @pytest.mark.asyncio
+    async def test_class_filter_empty_means_no_filter(self, mock_client, tools):
+        """Empty class_filter should return all classes (same as no filter)."""
+        ci_lookup = {
+            CI_A: _ci_record(CI_A, "Server-A"),
+            CI_B: _ci_record(CI_B, "Server-B"),
+        }
+
+        def mock_get_records(**kwargs):
+            table = kwargs.get("table", "")
+            query = kwargs.get("query", "")
+            if table == "cmdb_rel_ci" and f"child={CI_A}" in query:
+                return [_rel_record(parent=CI_B, child=CI_A)]
+            if table == "cmdb_ci" and "sys_idIN" in query:
+                return [v for k, v in ci_lookup.items() if k in query]
+            return []
+
+        mock_client.get_records.side_effect = mock_get_records
+        mock_client.get_record.side_effect = lambda **kw: (
+            ci_lookup.get(kw.get("sys_id")) or _rel_type_record()
+        )
+
+        result = _parse(await tools["get_dependency_tree"](
+            CI_A, max_depth=2, class_filter=[],
+        ))
+        assert len(result["tree"]["children"]) == 1
+
 
 # ── list_relationship_types ─────────────────────────────────────────
 
