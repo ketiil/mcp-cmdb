@@ -146,6 +146,17 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         Typical workflow: preview_ci_update → review diff → confirm_ci_update
 
+        Examples:
+            preview_ci_update(sys_id="abc123...", table="cmdb_ci_server", fields={
+                "operational_status": "6"
+            })  # Retire a server
+            preview_ci_update(sys_id="abc123...", table="cmdb_ci_server", fields={
+                "ip_address": "10.0.2.10", "short_description": "Moved to new subnet"
+            })
+            preview_ci_update(sys_id="abc123...", table="cmdb_ci_linux_server", fields={
+                "install_status": "7", "operational_status": "2"
+            })  # Mark as decommissioned
+
         Args:
             sys_id: The sys_id of the CI to update.
             table: The CMDB table (e.g. cmdb_ci_server). Must be the specific class table.
@@ -163,10 +174,10 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if err := _validate_sys_id(sys_id):
-            return _validation_error(err, "Provide a valid 32-character hex sys_id of the CI to update.")
+            return _validation_error(err, "Provide a valid 32-character hex sys_id of the CI to update.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         if err := _validate_fields(fields):
             return _validation_error(err, "Check field names and values.")
@@ -185,6 +196,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
                     "message": f"No CI found with sys_id '{sys_id}' in table '{table}'.",
                     "suggestion": "Verify the sys_id and table name.",
                     "retry": False,
+                    "suggested_next": "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
                 })
 
             # Build diff
@@ -228,6 +240,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
                 "message": f"No CI found with sys_id '{sys_id}' in table '{table}'.",
                 "suggestion": "Verify the sys_id and table name.",
                 "retry": False,
+                "suggested_next": "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
             })
         except ServiceNowError as e:
             return e.to_json()
@@ -262,7 +275,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if not token or not token.strip():
-            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_update first to get a token.")
+            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_update first to get a token.", "Call preview_ci_update(sys_id, table, fields) to get a new confirmation token.")
 
         # Check completed operations cache for idempotent retry
         if token in _completed_ops:
@@ -275,15 +288,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         op = pending.get(token)
         if op is None:
-            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_update again to get a new token.")
+            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_update again to get a new token.", "Call preview_ci_update(sys_id, table, fields) to get a new confirmation token.")
 
         if op.is_expired():
             del pending[token]
-            return _validation_error("Confirmation token has expired.", "Call preview_ci_update again to get a new token.")
+            return _validation_error("Confirmation token has expired.", "Call preview_ci_update again to get a new token.", "Call preview_ci_update(sys_id, table, fields) to get a new confirmation token.")
 
         if op.operation != "update":
             # Don't consume — the token belongs to a different confirm handler.
-            return _validation_error(f"Token is for a '{op.operation}' operation, not 'update'.", "Use confirm_ci_create for create tokens.")
+            return _validation_error(f"Token is for a '{op.operation}' operation, not 'update'.", "Use confirm_ci_create for create tokens.", "Call confirm_ci_create(token) to confirm a create operation.")
 
         logger.info(
             "AUDIT confirm_ci_update: user=%s table=%s sys_id=%s fields=%s",
@@ -358,6 +371,19 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         Typical workflow: suggest_table → describe_ci_class → preview_ci_create → confirm_ci_create
 
+        Examples:
+            preview_ci_create(table="cmdb_ci_server", fields={
+                "name": "web-server-01", "ip_address": "10.0.1.5",
+                "operational_status": "1", "os": "Linux Red Hat"
+            })
+            preview_ci_create(table="cmdb_ci_appl", fields={
+                "name": "MyApp", "operational_status": "1"
+            })
+            preview_ci_create(table="cmdb_ci_linux_server", fields={
+                "name": "db-primary-01", "ip_address": "10.10.5.20",
+                "os": "Linux Red Hat", "install_status": "1", "operational_status": "1"
+            })
+
         Args:
             table: The CMDB table to create the CI in (e.g. cmdb_ci_server).
             fields: Dictionary of field names to values. Must include at minimum
@@ -376,13 +402,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         if err := _validate_fields(fields):
             return _validation_error(err, "Check field names and values.")
 
         if "name" not in fields:
-            return _validation_error("Field 'name' is required for CI creation.", "Include a 'name' field in the fields dict.")
+            return _validation_error("Field 'name' is required for CI creation.", "Include a 'name' field in the fields dict.", "Use describe_ci_class(table) to see required fields before creating a CI.")
 
         # Generate token and store pending operation
         token = _generate_token()
@@ -434,7 +460,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if not token or not token.strip():
-            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_create first to get a token.")
+            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_create first to get a token.", "Call preview_ci_create(table, fields) to get a new confirmation token.")
 
         # Check completed operations cache for idempotent retry
         if token in _completed_ops:
@@ -447,15 +473,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         op = pending.get(token)
         if op is None:
-            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_create again to get a new token.")
+            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_create again to get a new token.", "Call preview_ci_create(table, fields) to get a new confirmation token.")
 
         if op.is_expired():
             del pending[token]
-            return _validation_error("Confirmation token has expired.", "Call preview_ci_create again to get a new token.")
+            return _validation_error("Confirmation token has expired.", "Call preview_ci_create again to get a new token.", "Call preview_ci_create(table, fields) to get a new confirmation token.")
 
         if op.operation != "create":
             # Don't consume — the token belongs to a different confirm handler.
-            return _validation_error(f"Token is for a '{op.operation}' operation, not 'create'.", "Use confirm_ci_update for update tokens.")
+            return _validation_error(f"Token is for a '{op.operation}' operation, not 'create'.", "Use confirm_ci_update for update tokens.", "Call confirm_ci_update(token) to confirm an update operation.")
 
         logger.info(
             "AUDIT confirm_ci_create: user=%s table=%s fields=%s",

@@ -214,7 +214,10 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         Builds an encoded query from the provided parameters and returns matching CIs.
         Name filtering uses STARTSWITH by default for performance (indexed operation).
 
-        Example: search_cis(ci_class="cmdb_ci_linux_server", name_filter="prod", operational_status="1")
+        Examples:
+            search_cis(ci_class="cmdb_ci_linux_server", operational_status="1")
+            search_cis(ci_class="cmdb_ci_win_server", name_filter="prod", display_value="true")
+            search_cis(ci_class="cmdb_ci_server", location="New York", limit=50)
 
         Typical workflow: suggest_table → search_cis → get_ci_details → get_ci_relationships
 
@@ -246,7 +249,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         if operational_status and operational_status not in VALID_OP_STATUS:
@@ -325,9 +328,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         for security. Use field-based operators only.
 
         Examples of encoded queries:
-        - "nameSTARTSWITHweb^operational_status=1" — operational CIs starting with "web"
-        - "sys_class_name=cmdb_ci_linux_server^ip_addressISNOTEMPTY" — Linux servers with IPs
-        - "sys_updated_on<2025-01-01" — CIs not updated since a specific date
+            "nameSTARTSWITHweb^operational_status=1" — operational CIs starting with "web"
+            "sys_class_name=cmdb_ci_linux_server^ip_addressISNOTEMPTY" — Linux servers with IPs
+            "sys_updated_onRELATIVEGT@dayofweek@ago@90" — CIs updated in the last 90 days
+            "assigned_to.nameLIKESmith^ORmanaged_by.nameLIKESmith" — CIs assigned to or managed by someone named Smith
+            "install_status=1^operational_status=1^sys_class_nameINcmdb_ci_linux_server,cmdb_ci_win_server" — installed and operational servers
+            "sys_updated_on<2025-01-01" — CIs not updated since a specific date
 
         Args:
             table: ServiceNow table name (e.g. cmdb_ci, cmdb_ci_server, cmdb_ci_win_server).
@@ -350,12 +356,13 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         if _DANGEROUS_QUERY_PATTERNS.search(encoded_query):
             return _validation_error(
                 "Encoded query contains blocked patterns (javascript:, gs.*, eval, etc.).",
                 "Use only field-based encoded query operators (=, STARTSWITH, IN, <, >, etc.). "
                 "Server-side script expressions are not allowed in raw queries.",
+                "Use search_cis for structured filtering, or query_cis_raw with field-based operators only.",
             )
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
@@ -416,6 +423,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         This tool only accepts sys_id (a 32-character hex identifier), not CI names.
         To look up a CI by name: search_cis(name_filter="my-server") → use the returned sys_id.
 
+        Examples:
+            get_ci_details(sys_id="abc123...", table="cmdb_ci_server")
+            get_ci_details(sys_id="abc123...", table="cmdb_ci_linux_server", display_value="true")
+            get_ci_details(sys_id="abc123...", fields=["name", "ip_address", "os", "os_version"])
+
         Args:
             sys_id: The 32-character sys_id of the CI record (from search_cis or query_cis_raw).
             table: The CMDB table the CI belongs to (e.g. cmdb_ci_server). Defaults to cmdb_ci.
@@ -439,9 +451,9 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         if err := _validate_sys_id(sys_id):
-            return _validation_error(err, "Provide a valid CI sys_id.")
+            return _validation_error(err, "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
         if display_value and display_value not in ("true", "all"):
             return _validation_error(
                 f"Invalid display_value '{display_value}'. Must be 'true', 'all', or omit.",
@@ -483,6 +495,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 return _not_found_error(
                     f"No CI found with sys_id '{sys_id}' in table '{table}'",
                     "Verify the sys_id and table name. The CI may exist in a different class table.",
+                    "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
                 )
             record["url"] = _nav_url(client.base_url, table, sys_id)
             record["suggested_next"] = "Use get_ci_relationships(sys_id) for dependencies, or preview_ci_update(sys_id, ...) to modify."
@@ -491,6 +504,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             return _not_found_error(
                 f"No CI found with sys_id '{sys_id}' in table '{table}'",
                 "Verify the sys_id and table name. The CI may exist in a different class table.",
+                "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
             )
         except ServiceNowError as e:
             return e.to_json()
@@ -512,7 +526,10 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         Uses the ServiceNow Stats API (/api/now/stats) for efficient counting without
         fetching actual records. Optionally group results by a field to get counts per value.
 
-        Example: count_cis(table="cmdb_ci_linux_server", group_by="operational_status")
+        Examples:
+            count_cis(table="cmdb_ci_server", group_by="operational_status")
+            count_cis(table="cmdb_ci", group_by="sys_class_name")
+            count_cis(table="cmdb_ci_linux_server", encoded_query="os=Linux Red Hat")
 
         Args:
             table: CMDB table to count records in (e.g. cmdb_ci_server). Defaults to cmdb_ci.
@@ -529,7 +546,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             raw = await client.get_aggregate(
@@ -748,6 +765,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         Each suggestion includes a confidence score (0-100) indicating how well it matches
         the description. When a single result clearly dominates, it is marked as best_match.
 
+        Examples:
+            suggest_table(description="linux servers") → cmdb_ci_linux_server
+            suggest_table(description="network switches") → cmdb_ci_netgear
+            suggest_table(description="web applications") → cmdb_ci_appl
+            Vague descriptions like "stuff" or "things" will return low-confidence matches.
+
         Args:
             description: Natural language description of what you're looking for.
                         Examples: "linux servers", "network switches", "web applications",
@@ -776,6 +799,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             return _validation_error(
                 "Description too short or vague to suggest a table.",
                 "Provide a more specific description like 'linux servers' or 'network switches'.",
+                "Use list_ci_classes() to browse all available CMDB tables.",
             )
 
         try:

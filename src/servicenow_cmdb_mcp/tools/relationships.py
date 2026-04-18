@@ -256,7 +256,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         sys_id (a 32-character hex identifier), not CI names. To look up a CI by name:
         search_cis(name_filter="my-server") → use the returned sys_id.
 
-        Example: get_ci_relationships(ci_sys_id="abc123...", direction="downstream", limit=10)
+        Examples:
+            get_ci_relationships(ci_sys_id="abc123...", direction="downstream", limit=10)
+            get_ci_relationships(ci_sys_id="abc123...", direction="upstream")
+            get_ci_relationships(ci_sys_id="abc123...", direction="both", limit=50)
 
         Args:
             ci_sys_id: The 32-character sys_id of the CI (from search_cis or query_cis_raw).
@@ -276,7 +279,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         offset = _clamp_offset(offset)
 
         if err := _validate_sys_id(ci_sys_id):
-            return _validation_error(err, "Provide a valid CI sys_id.")
+            return _validation_error(err, "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if direction not in ("upstream", "downstream", "both"):
             return _validation_error(
@@ -332,7 +335,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         returned (in-progress subtrees are discarded) with timed_out=true.
 
 
-        Example: get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=2)
+        Examples:
+            get_dependency_tree(ci_sys_id="abc123...", direction="downstream", max_depth=2)
+            get_dependency_tree(ci_sys_id="abc123...", class_filter=["cmdb_ci_linux_server", "cmdb_ci_win_server"])
+            get_dependency_tree(ci_sys_id="abc123...", format="ascii_tree", max_depth=3)
 
         Args:
             ci_sys_id: The sys_id of the starting CI (32-character hex string from search_cis).
@@ -361,7 +367,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
-            return _validation_error(err, "Provide a valid CI sys_id.")
+            return _validation_error(err, "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if direction not in ("upstream", "downstream"):
             return _validation_error(
@@ -583,7 +589,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         offset = _clamp_offset(offset)
 
         if err := _validate_sys_id(ci_sys_id):
-            return _validation_error(err, "Provide a valid CI sys_id.")
+            return _validation_error(err, "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if direction not in ("upstream", "downstream", "both"):
             return _validation_error(
@@ -600,6 +606,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                     return _validation_error(
                         "Relationship type name contains invalid characters.",
                         "Use list_relationship_types to see available type names.",
+                        "Use list_relationship_types() to browse valid relationship type names.",
                     )
                 # Looks like a name — resolve it
                 type_records = await client.get_records(
@@ -612,6 +619,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                     return _not_found_error(
                         f"Relationship type '{rel_type}' not found.",
                         "Use list_relationship_types to see available types.",
+                        "Use list_relationship_types() to browse all available relationship types.",
                     )
                 rel_type_sys_id = type_records[0].get("sys_id", "")
 
@@ -666,6 +674,11 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         needed. A hard 60-second timeout applies; on timeout, impact counts
         reflect only what was traversed before the deadline (timed_out=true).
 
+        Examples:
+            get_impact_summary(ci_sys_id="abc123...", max_depth=2)
+            get_impact_summary(ci_sys_id="abc123...", class_filter=["cmdb_ci_server", "cmdb_ci_linux_server"])
+            get_impact_summary(ci_sys_id="abc123...", max_depth=3)
+
         Args:
             ci_sys_id: The sys_id of the CI to assess impact for (32-character hex string
                       from search_cis).
@@ -686,7 +699,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
-            return _validation_error(err, "Provide a valid CI sys_id.")
+            return _validation_error(err, "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         max_depth = max(1, min(max_depth, 5))
         filter_set = set(class_filter) if class_filter else set()
@@ -796,7 +809,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         Performance: BFS explores breadth-first with a limit of 10 relationships
         per node per direction. A hard 60-second timeout applies.
 
-        Example: find_ci_path(source_sys_id="abc...", target_sys_id="def...", max_depth=4)
+        Examples:
+            find_ci_path(source_sys_id="abc123...", target_sys_id="def456...")
+            find_ci_path(source_sys_id="abc123...", target_sys_id="def456...", max_depth=3)
+            find_ci_path(source_sys_id="abc123...", target_sys_id="def456...", max_depth=8)
 
         Args:
             source_sys_id: The sys_id of the starting CI.
@@ -816,7 +832,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
 
         for label, sid in [("source_sys_id", source_sys_id), ("target_sys_id", target_sys_id)]:
             if err := _validate_sys_id(sid):
-                return _validation_error(f"Invalid {label}: {err}", "Provide a valid CI sys_id.")
+                return _validation_error(f"Invalid {label}: {err}", "Provide a valid CI sys_id.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         max_depth = max(1, min(max_depth, 10))
 

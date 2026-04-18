@@ -89,6 +89,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         Use cmdb_health_summary for a quick count without record-level detail.
         Narrow scope with ci_class or operational_status to reduce scan cost.
 
+        Examples:
+            find_orphan_cis(ci_class="cmdb_ci_server", operational_status="1")
+            find_orphan_cis(ci_class="cmdb_ci_linux_server", limit=50)
+            find_orphan_cis(ci_class="cmdb_ci", scan_offset=100)  # continue scanning
+
         Args:
             ci_class: CMDB table to search for orphans (e.g. cmdb_ci_server).
                       Defaults to cmdb_ci (all types).
@@ -105,7 +110,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         limit = _clamp_limit(limit)
         scan_offset = _clamp_offset(scan_offset)
 
@@ -236,7 +241,10 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         for finding CIs that may have been created by multiple discovery sources
         or manual entry.
 
-        Example: find_duplicate_cis(ci_class="cmdb_ci_server", match_field="name")
+        Examples:
+            find_duplicate_cis(ci_class="cmdb_ci_server", match_field="name")
+            find_duplicate_cis(ci_class="cmdb_ci_server", match_field="serial_number")
+            find_duplicate_cis(ci_class="cmdb_ci_server", match_field="ip_address", name_filter="prod")
 
         Args:
             ci_class: CMDB table to search (e.g. cmdb_ci_server). Defaults to cmdb_ci.
@@ -255,7 +263,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -363,6 +371,11 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         records that claim to be active but haven't been refreshed — often a sign
         of broken discovery or decommissioned assets.
 
+        Examples:
+            find_stale_cis(ci_class="cmdb_ci_server", days=90, operational_status="1")
+            find_stale_cis(ci_class="cmdb_ci_linux_server", days=30)
+            find_stale_cis(ci_class="cmdb_ci", days=180, operational_status="")  # all statuses
+
         Args:
             ci_class: CMDB table to search (e.g. cmdb_ci_server). Defaults to cmdb_ci.
             days: Number of days since last update to consider stale (default 90).
@@ -381,7 +394,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         days = max(1, min(days, 3650))
@@ -458,7 +471,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
         stale_days = max(1, min(stale_days, 3650))
 
         try:
