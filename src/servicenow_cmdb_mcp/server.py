@@ -103,20 +103,39 @@ def create_app() -> FastMCP:
                 params={
                     "sysparm_query": f"user_name={username}",
                     "sysparm_limit": "1",
-                    "sysparm_fields": "user_name,sys_id,roles",
-                    "sysparm_display_value": "true",
+                    "sysparm_fields": "user_name,sys_id",
                 },
             )
             records = response.get("result", [])
             if records:
                 user = records[0]
-                roles_str = user.get("roles", "")
-                roles = [r.strip() for r in roles_str.split(",") if r.strip()] if roles_str else []
+                user_sys_id = user.get("sys_id", "")
+
+                # Query sys_user_has_role for directly assigned roles
+                roles: list[str] = []
+                if user_sys_id:
+                    role_response = await client.get(
+                        "/api/now/table/sys_user_has_role",
+                        params={
+                            "sysparm_query": f"user={user_sys_id}^inherited=false",
+                            "sysparm_fields": "role",
+                            "sysparm_display_value": "true",
+                            "sysparm_limit": "100",
+                        },
+                    )
+                    role_records = role_response.get("result", [])
+                    for r in role_records:
+                        role_val = r.get("role", "")
+                        if isinstance(role_val, dict):
+                            role_val = role_val.get("display_value", "")
+                        if role_val:
+                            roles.append(role_val)
+
                 return _json({
                     "connected": True,
                     "instance_url": client.base_url,
                     "authenticated_as": user.get("user_name", username),
-                    "user_sys_id": user.get("sys_id", ""),
+                    "user_sys_id": user_sys_id,
                     "roles": roles,
                     "suggested_next": "Use search_cis to query CIs, list_ci_classes to explore the schema, or suggest_table to find the right table.",
                 })
