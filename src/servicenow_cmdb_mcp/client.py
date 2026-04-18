@@ -327,6 +327,7 @@ class ServiceNowClient:
         limit: int | None = None,
         offset: int = 0,
         order_by: str = "ORDERBYsys_created_on",
+        display_value: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch records from a ServiceNow table with pagination.
 
@@ -339,6 +340,9 @@ class ServiceNowClient:
             limit: Max records to return. Defaults to settings.default_limit.
             offset: Pagination offset.
             order_by: Order clause appended to query. Defaults to ORDERBYsys_created_on.
+            display_value: Controls how reference fields are returned. "" (default) returns
+                          raw sys_id values. "true" returns human-readable display values.
+                          "all" returns both as {"value": sys_id, "display_value": "..."}.
 
         Returns:
             List of record dicts with only the requested fields.
@@ -356,6 +360,8 @@ class ServiceNowClient:
         }
         if fields:
             params["sysparm_fields"] = ",".join(fields)
+        if display_value:
+            params["sysparm_display_value"] = display_value
 
         response = await self.get(f"/api/now/table/{table}", params=params)
         return response.get("result", [])
@@ -365,6 +371,7 @@ class ServiceNowClient:
         table: str,
         sys_id: str,
         fields: list[str] | None = None,
+        display_value: str = "",
     ) -> dict[str, Any] | None:
         """Fetch a single record by sys_id.
 
@@ -372,6 +379,9 @@ class ServiceNowClient:
             table: ServiceNow table name.
             sys_id: The record's sys_id.
             fields: List of field names to return.
+            display_value: Controls how reference fields are returned. "" (default) returns
+                          raw sys_id values. "true" returns human-readable display values.
+                          "all" returns both as {"value": sys_id, "display_value": "..."}.
 
         Returns:
             Record dict, or None if the response contains no result body.
@@ -382,6 +392,8 @@ class ServiceNowClient:
         params: dict[str, str] = {}
         if fields:
             params["sysparm_fields"] = ",".join(fields)
+        if display_value:
+            params["sysparm_display_value"] = display_value
 
         response = await self.get(f"/api/now/table/{table}/{sys_id}", params=params)
         return response.get("result")

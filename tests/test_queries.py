@@ -239,6 +239,23 @@ class TestSearchCis:
         call_kwargs = mock_client.get_records.call_args.kwargs
         assert "operational_status=4" in call_kwargs["query"]
 
+    @pytest.mark.asyncio
+    async def test_display_value_passed_to_client(self, mock_client, tools):
+        """display_value='true' should be passed through to client."""
+        mock_client.get_records.return_value = []
+        await tools["search_cis"](ci_class="cmdb_ci", display_value="true")
+        mock_client.get_records.assert_called_once()
+        call_kwargs = mock_client.get_records.call_args.kwargs
+        assert call_kwargs.get("display_value") == "true"
+
+    @pytest.mark.asyncio
+    async def test_invalid_display_value(self, mock_client, tools):
+        """Invalid display_value should return ValidationError."""
+        result = _parse(await tools["search_cis"](ci_class="cmdb_ci", display_value="invalid"))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "display_value" in result["message"]
+
 
 # ── query_cis_raw ───────────────────────────────────────────────────
 
@@ -307,6 +324,31 @@ class TestQueryCisRaw:
         ))
         assert "error" not in result or result.get("error") is not True
 
+    @pytest.mark.asyncio
+    async def test_display_value_passed_to_client(self, mock_client, tools):
+        """display_value='true' should be passed through to client."""
+        mock_client.get_records.return_value = []
+        await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="operational_status=1",
+            display_value="true",
+        )
+        mock_client.get_records.assert_called_once()
+        call_kwargs = mock_client.get_records.call_args.kwargs
+        assert call_kwargs.get("display_value") == "true"
+
+    @pytest.mark.asyncio
+    async def test_invalid_display_value(self, mock_client, tools):
+        """Invalid display_value should return ValidationError."""
+        result = _parse(await tools["query_cis_raw"](
+            table="cmdb_ci",
+            encoded_query="operational_status=1",
+            display_value="invalid",
+        ))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "display_value" in result["message"]
+
 
 # ── get_ci_details ──────────────────────────────────────────────────
 
@@ -351,6 +393,27 @@ class TestGetCiDetails:
         mock_client.get_record.side_effect = SNPermissionError("Denied")
         result = _parse(await tools["get_ci_details"](sys_id=CI_A, table="cmdb_ci"))
         assert result["error"] is True
+
+    @pytest.mark.asyncio
+    async def test_display_value_passed_to_client(self, mock_client, tools):
+        """display_value='true' should be passed through to client."""
+        mock_client.get_record.return_value = {
+            "sys_id": CI_A, "name": "web-01", "sys_class_name": "cmdb_ci_server",
+        }
+        await tools["get_ci_details"](sys_id=CI_A, table="cmdb_ci", display_value="true")
+        mock_client.get_record.assert_called_once()
+        call_kwargs = mock_client.get_record.call_args.kwargs
+        assert call_kwargs.get("display_value") == "true"
+
+    @pytest.mark.asyncio
+    async def test_invalid_display_value(self, mock_client, tools):
+        """Invalid display_value should return ValidationError."""
+        result = _parse(await tools["get_ci_details"](
+            sys_id=CI_A, table="cmdb_ci", display_value="invalid",
+        ))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+        assert "display_value" in result["message"]
 
 
 # ── count_cis ───────────────────────────────────────────────────────

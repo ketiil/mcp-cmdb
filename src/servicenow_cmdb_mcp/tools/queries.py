@@ -207,6 +207,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         limit: int = 25,
         offset: int = 0,
         fields: list[str] | None = None,
+        display_value: Literal["", "true", "all"] = "",
     ) -> str:
         """Search CMDB configuration items with structured filters.
 
@@ -231,6 +232,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             offset: Pagination offset for retrieving subsequent pages of results.
             fields: Specific fields to return. Defaults to sys_id, name, sys_class_name,
                     operational_status, ip_address, location, sys_updated_on.
+            display_value: Controls how reference fields (location, company, assigned_to, etc.)
+                          are returned. "" (default) returns raw sys_id values. "true" returns
+                          human-readable display values (e.g. "New York" instead of a sys_id).
+                          "all" returns both as {"value": sys_id, "display_value": "New York"}.
+                          Use "true" when presenting data to users; use "all" when you need
+                          both the sys_id (for API calls) and the display name.
 
         Returns:
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
@@ -248,6 +255,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 "Valid values: 1=Operational, 2=Non-Operational, 3=Repair in Progress, "
                 "4=DR Standby, 5=Ready, 6=Retired, 7=Pipeline, 8=Catalog.",
                 "Use a numeric code from 1-8.",
+            )
+        if display_value and display_value not in ("true", "all"):
+            return _validation_error(
+                f"Invalid display_value '{display_value}'. Must be 'true', 'all', or omit.",
+                "Use 'true' for display values only, 'all' for both sys_id and display value.",
             )
         query_parts: list[str] = []
         if name_filter:
@@ -269,6 +281,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 fields=result_fields,
                 limit=limit,
                 offset=offset,
+                display_value=display_value,
             )
             total_coro = _safe_total(client, ci_class, query)
             records, total = await asyncio.gather(records_coro, total_coro)
@@ -301,6 +314,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         fields: list[str] | None = None,
         limit: int = 25,
         offset: int = 0,
+        display_value: Literal["", "true", "all"] = "",
     ) -> str:
         """Execute a raw encoded query against any CMDB table.
 
@@ -322,6 +336,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                     operational_status, ip_address, location, sys_updated_on.
             limit: Maximum number of results to return (1-1000, default 25).
             offset: Pagination offset for retrieving subsequent pages.
+            display_value: Controls how reference fields (location, company, assigned_to, etc.)
+                          are returned. "" (default) returns raw sys_id values. "true" returns
+                          human-readable display values (e.g. "New York" instead of a sys_id).
+                          "all" returns both as {"value": sys_id, "display_value": "New York"}.
+                          Use "true" when presenting data to users; use "all" when you need
+                          both the sys_id (for API calls) and the display name.
 
         Returns:
             JSON object with "count" (number of results returned) and "records" (list of CI dicts).
@@ -339,6 +359,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             )
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
+        if display_value and display_value not in ("true", "all"):
+            return _validation_error(
+                f"Invalid display_value '{display_value}'. Must be 'true', 'all', or omit.",
+                "Use 'true' for display values only, 'all' for both sys_id and display value.",
+            )
         result_fields = fields or _CI_LIST_FIELDS
 
         try:
@@ -348,6 +373,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 fields=result_fields,
                 limit=limit,
                 offset=offset,
+                display_value=display_value,
             )
             total_coro = _safe_total(client, table, encoded_query)
             records, total = await asyncio.gather(records_coro, total_coro)
@@ -378,6 +404,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         sys_id: str,
         table: str = "cmdb_ci",
         fields: list[str] | None = None,
+        display_value: Literal["", "true", "all"] = "",
     ) -> str:
         """Get the full details of a single configuration item by its sys_id.
 
@@ -398,6 +425,12 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                     operational_status, install_status, location, department, company,
                     os, os_version, cpu_count, ram, disk_space, discovery_source,
                     first_discovered, last_discovered, sys_created_on, sys_updated_on.
+            display_value: Controls how reference fields (location, company, assigned_to, etc.)
+                          are returned. "" (default) returns raw sys_id values. "true" returns
+                          human-readable display values (e.g. "New York" instead of a sys_id).
+                          "all" returns both as {"value": sys_id, "display_value": "New York"}.
+                          Use "true" when presenting data to users; use "all" when you need
+                          both the sys_id (for API calls) and the display name.
 
         Returns:
             JSON object with the CI record, or an error if not found.
@@ -409,6 +442,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         if err := _validate_sys_id(sys_id):
             return _validation_error(err, "Provide a valid CI sys_id.")
+        if display_value and display_value not in ("true", "all"):
+            return _validation_error(
+                f"Invalid display_value '{display_value}'. Must be 'true', 'all', or omit.",
+                "Use 'true' for display values only, 'all' for both sys_id and display value.",
+            )
         default_fields = [
             "sys_id",
             "name",
@@ -439,6 +477,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 table=table,
                 sys_id=sys_id,
                 fields=result_fields,
+                display_value=display_value,
             )
             if not record:
                 return _not_found_error(
