@@ -348,6 +348,39 @@ class TestGetFlows:
         result = _parse(await tools["get_flows"](table="cmdb_ci"))
         assert result["error"] is True
 
+    @pytest.mark.asyncio
+    async def test_name_filter_only(self, mock_client, tools):
+        """get_flows with only name_filter (no table) should succeed."""
+        mock_client.get_records.return_value = []
+        result = _parse(await tools["get_flows"](name_filter="decommission"))
+        assert "error" not in result
+        call_args = mock_client.get_records.call_args
+        assert "nameLIKEdecommission" in call_args.kwargs["query"]
+
+    @pytest.mark.asyncio
+    async def test_both_table_and_name_filter(self, mock_client, tools):
+        """get_flows with both table and name_filter should include both in the query."""
+        mock_client.get_records.return_value = []
+        result = _parse(await tools["get_flows"](table="cmdb_ci_server", name_filter="retire"))
+        assert "error" not in result
+        call_args = mock_client.get_records.call_args
+        assert "internal_nameCONTAINScmdb_ci_server" in call_args.kwargs["query"]
+        assert "nameLIKEretire" in call_args.kwargs["query"]
+
+    @pytest.mark.asyncio
+    async def test_neither_table_nor_name_filter(self, tools):
+        """get_flows with neither table nor name_filter should return ValidationError."""
+        result = _parse(await tools["get_flows"]())
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+
+    @pytest.mark.asyncio
+    async def test_name_filter_injection_blocked(self, tools):
+        """get_flows with '^' in name_filter should return ValidationError."""
+        result = _parse(await tools["get_flows"](name_filter="legit^active=false"))
+        assert result["error"] is True
+        assert result["category"] == "ValidationError"
+
 
 # ── get_acls ────────────────────────────────────────────────────────
 

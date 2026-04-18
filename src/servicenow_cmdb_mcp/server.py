@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -12,7 +13,7 @@ from servicenow_cmdb_mcp.cache import MetadataCache
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.config import Settings
 from servicenow_cmdb_mcp.errors import ServiceNowError
-from servicenow_cmdb_mcp.tools._utils import _json
+from servicenow_cmdb_mcp.tools._utils import _json, _validate_table_name, _validation_error
 from servicenow_cmdb_mcp.prompts.workflows import register_prompts
 from servicenow_cmdb_mcp.resources.schema import register_schema_resources
 from servicenow_cmdb_mcp.tools.configurables import register_configurable_tools
@@ -25,6 +26,13 @@ from servicenow_cmdb_mcp.tools.queries import register_query_tools
 from servicenow_cmdb_mcp.tools.relationships import register_relationship_tools
 
 logger = logging.getLogger(__name__)
+
+# Patterns blocked in diagnostic tool queries (same as queries.py).
+_DANGEROUS_QUERY_PATTERNS = re.compile(
+    r"javascript:|gs\.(include|sleep|log|print|exec|eval|import)|"
+    r"Packages\.|java\.|eval\(|new\s+Function",
+    re.IGNORECASE,
+)
 
 
 def create_app() -> FastMCP:
@@ -166,6 +174,10 @@ def create_app() -> FastMCP:
     ) -> str:
         """TEMPORARY diagnostic tool. Probe any ServiceNow table to check access.
 
+        Note: This is a diagnostic tool intended for troubleshooting only.
+        Table names are validated and dangerous query patterns (javascript:, gs.*, eval)
+        are blocked before the request is sent.
+
         Args:
             table: Table to probe (e.g. sys_hub_step_instance).
             query: Optional encoded query filter.
@@ -173,6 +185,16 @@ def create_app() -> FastMCP:
         """
         if client is None:
             return _json({"error": True, "message": "No client"})
+
+        if err := _validate_table_name(table):
+            return _validation_error(err, "Provide a valid table name (e.g. sys_hub_step_instance).")
+
+        if query and _DANGEROUS_QUERY_PATTERNS.search(query):
+            return _validation_error(
+                "Query contains blocked patterns (javascript:, gs.*, eval, etc.).",
+                "Use only field-based encoded query operators (=, STARTSWITH, IN, <, >, etc.).",
+            )
+
         try:
             records = await client.get_records(
                 table=table,

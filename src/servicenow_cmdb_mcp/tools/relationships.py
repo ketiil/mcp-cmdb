@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -845,19 +846,31 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 "suggested_next": "Source and target are the same CI.",
             })
 
-        from collections import deque
-
+        # parent_map: child_id -> (parent_id, relationship_type dict | None)
+        # Used to reconstruct the path once the target is found without
+        # storing full path copies in every queue entry.
+        parent_map: dict[str, tuple[str, dict[str, str] | None]] = {
+            source_sys_id: ("", None),
+        }
         visited: set[str] = {source_sys_id}
-        queue: deque[tuple[str, list[tuple[str, dict[str, str] | None]]]] = deque()
-        queue.append((source_sys_id, [(source_sys_id, None)]))
+        queue: deque[str] = deque()
+        queue.append(source_sys_id)
 
         try:
             timed_out = False
 
-            async def bfs() -> list[tuple[str, dict[str, str] | None]] | None:
+            async def bfs() -> bool:
                 while queue:
-                    current_id, path = queue.popleft()
-                    if len(path) > max_depth + 1:
+                    if len(visited) >= _MAX_TRAVERSAL_NODES:
+                        break
+                    current_id = queue.popleft()
+                    # Depth check: count hops from source to current_id via parent_map
+                    depth = 0
+                    probe = current_id
+                    while parent_map[probe][0]:
+                        probe = parent_map[probe][0]
+                        depth += 1
+                    if depth >= max_depth:
                         continue
 
                     rels = await _fetch_relationships(
@@ -868,23 +881,31 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                         if neighbor_id in visited:
                             continue
                         rel_type = rel["relationship_type"]
-                        new_path = path + [(neighbor_id, rel_type)]
+                        parent_map[neighbor_id] = (current_id, rel_type)
                         if neighbor_id == target_sys_id:
-                            return new_path
+                            return True
                         visited.add(neighbor_id)
-                        if len(new_path) <= max_depth + 1:
-                            queue.append((neighbor_id, new_path))
-                return None
+                        queue.append(neighbor_id)
+                return False
 
             try:
-                found_path = await asyncio.wait_for(bfs(), timeout=_TRAVERSAL_TIMEOUT)
+                found = await asyncio.wait_for(bfs(), timeout=_TRAVERSAL_TIMEOUT)
             except asyncio.TimeoutError:
                 timed_out = True
-                found_path = None
+                found = False
 
-            if found_path:
+            if found:
+                # Reconstruct path by walking parent_map backwards from target
+                rev_path: list[tuple[str, dict[str, str] | None]] = []
+                node_id: str = target_sys_id
+                while node_id:
+                    parent_id, rel_type = parent_map[node_id]
+                    rev_path.append((node_id, rel_type))
+                    node_id = parent_id
+                rev_path.reverse()
+
                 path_nodes: list[dict[str, Any]] = []
-                for sys_id, rel_type in found_path:
+                for sys_id, rel_type in rev_path:
                     ci_info = await _resolve_ci(client, sys_id)
                     node: dict[str, Any] = {"ci": ci_info}
                     if rel_type:
@@ -893,7 +914,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
 
                 return _json({
                     "found": True,
-                    "hops": len(found_path) - 1,
+                    "hops": len(path_nodes) - 1,
                     "path": path_nodes,
                     "nodes_visited": len(visited),
                     "suggested_next": "Use get_ci_details(sys_id) to inspect any node, or get_dependency_tree(sys_id) for the full tree.",

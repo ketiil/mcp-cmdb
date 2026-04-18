@@ -283,6 +283,12 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             if err := _validate_table_name(table):
                 return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
+        if name_filter and "^" in name_filter:
+            return _validation_error(
+                "name_filter must not contain encoded query operators ('^').",
+                "Provide a plain text search term without special characters.",
+            )
+
         try:
             query_parts: list[str] = []
             if table:
@@ -571,6 +577,12 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             return err
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
+
+        if name_filter and "^" in name_filter:
+            return _validation_error(
+                "name_filter must not contain encoded query operators ('^').",
+                "Provide a plain text search term without special characters.",
+            )
 
         try:
             query_parts: list[str] = []
