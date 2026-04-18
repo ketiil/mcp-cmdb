@@ -151,6 +151,43 @@ def create_app() -> FastMCP:
         except ServiceNowError as e:
             return e.to_json()
 
+    # ── Diagnostic tool ──────────────────────────────────────────────────
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
+    )
+    async def _diag_probe_table(
+        table: str,
+        query: str = "",
+        limit: int = 3,
+    ) -> str:
+        """TEMPORARY diagnostic tool. Probe any ServiceNow table to check access.
+
+        Args:
+            table: Table to probe (e.g. sys_hub_step_instance).
+            query: Optional encoded query filter.
+            limit: Max records to return (default 3).
+        """
+        if client is None:
+            return _json({"error": True, "message": "No client"})
+        try:
+            records = await client.get_records(
+                table=table,
+                query=query,
+                limit=limit,
+            )
+            return _json({
+                "table": table,
+                "count": len(records),
+                "fields": list(records[0].keys()) if records else [],
+                "sample": records[:2] if records else [],
+            })
+        except ServiceNowError as e:
+            return e.to_json()
+
     # ── Tool registration ────────────────────────────────────────────────
     # Each domain module exports a register_*_tools(mcp, client) function.
 
