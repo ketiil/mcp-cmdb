@@ -66,6 +66,13 @@ uv run ruff check src/
 - Use `Literal` for constrained params (e.g. `operational_status`, `severity`) — makes schema visible to agents.
 - Return `str` (JSON-serialized) from all tools via `json.dumps(result, indent=2, default=str)`.
 
+Tool schema stability (no versioning in MCP spec):
+- **Never rename** a parameter — LLM clients cache tool definitions and renaming is a silent breaking change.
+- **Never remove** a parameter — add a deprecation period or keep it as a no-op.
+- **Never change** a parameter's type (e.g. `int` → `str`).
+- **Only add** new optional parameters with sensible defaults — existing callers won't break.
+- Changing the structure of return values is also a breaking change for downstream consumers.
+
 ServiceNow query conventions:
 - Always use `sysparm_fields` — never fetch full records.
 - `STARTSWITH` for name filters, not `CONTAINS` (avoids full table scans).
