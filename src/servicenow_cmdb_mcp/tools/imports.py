@@ -14,11 +14,12 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
-    _has_more,
     _json,
+    _pagination_metadata,
     _require_client,
     _safe_total,
     _validate_table_name,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if target_table:
             if err := _validate_table_name(target_table):
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": err, "suggestion": "Provide a valid table name.",
-                    "retry": False,
-                })
+                return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts: list[str] = []
@@ -113,9 +110,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
                 "data_sources": sources,
                 "suggested_next": "Use get_import_set_runs(table_name) to see recent runs for a data source, or get_transform_errors(target_table) for mapping failures.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(sources), limit)
-            result["next_offset"] = offset + len(sources)
+            result.update(_pagination_metadata(total, offset, len(sources), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -162,20 +157,14 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if table_name:
             if err := _validate_table_name(table_name):
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": err, "suggestion": "Provide a valid table name.",
-                    "retry": False,
-                })
+                return _validation_error(err, "Provide a valid table name.")
 
         # Validate state doesn't contain query operators
         if state and "^" in state:
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": "state must not contain query operators.",
-                "suggestion": "Remove '^' characters from filter values.",
-                "retry": False,
-            })
+            return _validation_error(
+                "state must not contain query operators.",
+                "Remove '^' characters from filter values.",
+            )
 
         try:
             query_parts = [f"sys_created_on>=javascript:gs.daysAgo({days})"]
@@ -223,9 +212,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
                 "import_set_runs": runs,
                 "suggested_next": "Use get_transform_errors(target_table) to see row-level errors, or list_data_sources() to review source configuration.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(runs), limit)
-            result["next_offset"] = offset + len(runs)
+            result.update(_pagination_metadata(total, offset, len(runs), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -273,11 +260,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if target_table:
             if err := _validate_table_name(target_table):
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": err, "suggestion": "Provide a valid table name.",
-                    "retry": False,
-                })
+                return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts = [
@@ -328,9 +311,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
                 "transform_errors": errors,
                 "suggested_next": "Use get_ci_details(sys_id) to inspect a target CI, or get_import_set_runs() to see the parent import run.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(errors), limit)
-            result["next_offset"] = offset + len(errors)
+            result.update(_pagination_metadata(total, offset, len(errors), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()

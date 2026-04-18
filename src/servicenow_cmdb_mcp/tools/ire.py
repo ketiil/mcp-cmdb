@@ -14,14 +14,16 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
-    _has_more,
     _json,
     _nav_url,
+    _not_found_error,
+    _pagination_metadata,
     _require_client,
     _safe_total,
     _validate_cmdb_table,
     _validate_sys_id,
     _validate_table_name,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,11 +71,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
 
         if table:
             if err := _validate_table_name(table):
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": err, "suggestion": "Provide a valid table name.",
-                    "retry": False,
-                })
+                return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts: list[str] = []
@@ -117,9 +115,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
                 "identification_rules": rules,
                 "suggested_next": "Use get_reconciliation_rules(table) to see data refresh rules, or explain_duplicate(sys_id_a, sys_id_b) to compare two CIs against these rules.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(rules), limit)
-            result["next_offset"] = offset + len(rules)
+            result.update(_pagination_metadata(total, offset, len(rules), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -163,11 +159,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
 
         if table:
             if err := _validate_table_name(table):
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": err, "suggestion": "Provide a valid table name.",
-                    "retry": False,
-                })
+                return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts: list[str] = []
@@ -212,9 +204,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
                 "reconciliation_rules": rules,
                 "suggested_next": "Use get_identification_rules(table) to see matching rules, or find_duplicate_cis(table) to find potential duplicates.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(rules), limit)
-            result["next_offset"] = offset + len(rules)
+            result.update(_pagination_metadata(total, offset, len(rules), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -256,35 +246,19 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
             return err
 
         if err := _validate_sys_id(sys_id_a):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": f"sys_id_a: {err}",
-                "suggestion": "Provide the sys_id of the first CI.",
-                "retry": False,
-            })
+            return _validation_error(f"sys_id_a: {err}", "Provide the sys_id of the first CI.")
 
         if err := _validate_sys_id(sys_id_b):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": f"sys_id_b: {err}",
-                "suggestion": "Provide the sys_id of the second CI.",
-                "retry": False,
-            })
+            return _validation_error(f"sys_id_b: {err}", "Provide the sys_id of the second CI.")
 
         if sys_id_a == sys_id_b:
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": "sys_id_a and sys_id_b are the same. Provide two different CIs to compare.",
-                "suggestion": "Use two distinct sys_ids.",
-                "retry": False,
-            })
+            return _validation_error(
+                "sys_id_a and sys_id_b are the same. Provide two different CIs to compare.",
+                "Use two distinct sys_ids.",
+            )
 
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
 
         try:
             # First fetch identification rules to know which fields to compare
@@ -326,20 +300,16 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
             )
 
             if not ci_a:
-                return _json({
-                    "error": True, "category": "NotFoundError",
-                    "message": f"CI A not found: sys_id '{sys_id_a}' in table '{table}'.",
-                    "suggestion": "Verify the sys_id and table.",
-                    "retry": False,
-                })
+                return _not_found_error(
+                    f"CI A not found: sys_id '{sys_id_a}' in table '{table}'.",
+                    "Verify the sys_id and table.",
+                )
 
             if not ci_b:
-                return _json({
-                    "error": True, "category": "NotFoundError",
-                    "message": f"CI B not found: sys_id '{sys_id_b}' in table '{table}'.",
-                    "suggestion": "Verify the sys_id and table.",
-                    "retry": False,
-                })
+                return _not_found_error(
+                    f"CI B not found: sys_id '{sys_id_b}' in table '{table}'.",
+                    "Verify the sys_id and table.",
+                )
 
             comparison: list[dict[str, Any]] = []
             for field in compare_fields:

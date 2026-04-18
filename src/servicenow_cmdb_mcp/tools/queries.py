@@ -17,13 +17,15 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _extract_agg_count,
-    _has_more,
     _json,
     _nav_url,
+    _not_found_error,
+    _pagination_metadata,
     _require_client,
     _safe_total,
     _validate_cmdb_table,
     _validate_sys_id,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -237,23 +239,16 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         if operational_status and operational_status not in VALID_OP_STATUS:
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": f"Invalid operational_status '{operational_status}'. "
-                           "Valid values: 1=Operational, 2=Non-Operational, 3=Repair in Progress, "
-                           "4=DR Standby, 5=Ready, 6=Retired, 7=Pipeline, 8=Catalog.",
-                "suggestion": "Use a numeric code from 1-8.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid operational_status '{operational_status}'. "
+                "Valid values: 1=Operational, 2=Non-Operational, 3=Repair in Progress, "
+                "4=DR Standby, 5=Ready, 6=Retired, 7=Pipeline, 8=Catalog.",
+                "Use a numeric code from 1-8.",
+            )
         query_parts: list[str] = []
         if name_filter:
             query_parts.append(f"nameSTARTSWITH{name_filter}")
@@ -288,9 +283,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 "records": records,
                 "suggested_next": "Use get_ci_details(sys_id) for full record, get_ci_relationships(sys_id) for dependencies, or count_cis for totals.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(records), limit)
-            result["next_offset"] = offset + len(records)
+            result.update(_pagination_metadata(total, offset, len(records), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -337,20 +330,13 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         if _DANGEROUS_QUERY_PATTERNS.search(encoded_query):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": "Encoded query contains blocked patterns (javascript:, gs.*, eval, etc.).",
-                "suggestion": "Use only field-based encoded query operators (=, STARTSWITH, IN, <, >, etc.). "
-                              "Server-side script expressions are not allowed in raw queries.",
-                "retry": False,
-            })
+            return _validation_error(
+                "Encoded query contains blocked patterns (javascript:, gs.*, eval, etc.).",
+                "Use only field-based encoded query operators (=, STARTSWITH, IN, <, >, etc.). "
+                "Server-side script expressions are not allowed in raw queries.",
+            )
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         result_fields = fields or _CI_LIST_FIELDS
@@ -376,9 +362,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 "records": records,
                 "suggested_next": "Use get_ci_details(sys_id) for full record, or get_ci_relationships(sys_id) for dependencies.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(records), limit)
-            result["next_offset"] = offset + len(records)
+            result.update(_pagination_metadata(total, offset, len(records), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -422,19 +406,9 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         if err := _validate_sys_id(sys_id):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CI sys_id.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CI sys_id.")
         default_fields = [
             "sys_id",
             "name",
@@ -467,24 +441,18 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                 fields=result_fields,
             )
             if not record:
-                return _json({
-                    "error": True,
-                    "category": "NotFoundError",
-                    "message": f"No CI found with sys_id '{sys_id}' in table '{table}'",
-                    "suggestion": "Verify the sys_id and table name. The CI may exist in a different class table.",
-                    "retry": False,
-                })
+                return _not_found_error(
+                    f"No CI found with sys_id '{sys_id}' in table '{table}'",
+                    "Verify the sys_id and table name. The CI may exist in a different class table.",
+                )
             record["url"] = _nav_url(client.base_url, table, sys_id)
             record["suggested_next"] = "Use get_ci_relationships(sys_id) for dependencies, or preview_ci_update(sys_id, ...) to modify."
             return _json(record)
         except NotFoundError:
-            return _json({
-                "error": True,
-                "category": "NotFoundError",
-                "message": f"No CI found with sys_id '{sys_id}' in table '{table}'",
-                "suggestion": "Verify the sys_id and table name. The CI may exist in a different class table.",
-                "retry": False,
-            })
+            return _not_found_error(
+                f"No CI found with sys_id '{sys_id}' in table '{table}'",
+                "Verify the sys_id and table name. The CI may exist in a different class table.",
+            )
         except ServiceNowError as e:
             return e.to_json()
 
@@ -522,12 +490,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
 
         try:
             raw = await client.get_aggregate(
@@ -771,13 +734,10 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
         filtered_keywords = [kw for kw in keywords if len(kw) >= 3]
 
         if not filtered_keywords:
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Description too short or vague to suggest a table.",
-                "suggestion": "Provide a more specific description like 'linux servers' or 'network switches'.",
-                "retry": False,
-            })
+            return _validation_error(
+                "Description too short or vague to suggest a table.",
+                "Provide a more specific description like 'linux servers' or 'network switches'.",
+            )
 
         try:
             # Fetch all CMDB classes and score locally — more reliable than

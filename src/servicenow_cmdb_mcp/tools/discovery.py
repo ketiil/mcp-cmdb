@@ -14,10 +14,11 @@ from servicenow_cmdb_mcp.errors import ServiceNowError
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
-    _has_more,
     _json,
+    _pagination_metadata,
     _require_client,
     _safe_total,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 "schedules": schedules,
                 "suggested_next": "Use get_discovery_status(schedule_name) to see recent scan results, or get_discovery_errors() for error logs.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(schedules), limit)
-            result["next_offset"] = offset + len(schedules)
+            result.update(_pagination_metadata(total, offset, len(schedules), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -149,21 +148,17 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
         # Validate filter values don't contain query operators
         for val in (schedule_name, state):
             if val and "^" in val:
-                return _json({
-                    "error": True, "category": "ValidationError",
-                    "message": "Filter values must not contain query operators.",
-                    "suggestion": "Remove '^' characters from filter values.",
-                    "retry": False,
-                })
+                return _validation_error(
+                    "Filter values must not contain query operators.",
+                    "Remove '^' characters from filter values.",
+                )
 
         if state and state not in VALID_DISCOVERY_STATES:
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": f"Invalid state '{state}'. "
-                           f"Valid values: {', '.join(sorted(VALID_DISCOVERY_STATES))}.",
-                "suggestion": "Use one of the valid discovery state values.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid state '{state}'. "
+                f"Valid values: {', '.join(sorted(VALID_DISCOVERY_STATES))}.",
+                "Use one of the valid discovery state values.",
+            )
 
         try:
             query_parts: list[str] = []
@@ -209,9 +204,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 "statuses": statuses,
                 "suggested_next": "Use get_discovery_errors() to see error details for failed scans, or get_ci_details(sys_id) on a discovered CI.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(statuses), limit)
-            result["next_offset"] = offset + len(statuses)
+            result.update(_pagination_metadata(total, offset, len(statuses), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -258,13 +251,11 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
         days = max(1, min(days, 365))
 
         if severity and severity not in VALID_SEVERITIES:
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": f"Invalid severity '{severity}'. "
-                           f"Valid values: {', '.join(sorted(VALID_SEVERITIES))}.",
-                "suggestion": "Use 'Error', 'Warning', or 'Info'.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid severity '{severity}'. "
+                f"Valid values: {', '.join(sorted(VALID_SEVERITIES))}.",
+                "Use 'Error', 'Warning', or 'Info'.",
+            )
 
         try:
             query_parts = [f"sys_created_on>=javascript:gs.daysAgo({days})"]
@@ -310,9 +301,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 "errors": errors,
                 "suggested_next": "Use get_ci_details(sys_id) to inspect a CI referenced in an error, or list_discovery_schedules() to review schedule configuration.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(errors), limit)
-            result["next_offset"] = offset + len(errors)
+            result.update(_pagination_metadata(total, offset, len(errors), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()

@@ -13,7 +13,7 @@ from mcp.types import ToolAnnotations
 from servicenow_cmdb_mcp.client import ServiceNowClient
 from servicenow_cmdb_mcp.errors import NotFoundError, ServiceNowError
 from servicenow_cmdb_mcp.redaction import redact_credentials
-from servicenow_cmdb_mcp.tools._utils import _TABLE_NAME_RE, _json, _require_client, _validate_cmdb_table, _validate_sys_id
+from servicenow_cmdb_mcp.tools._utils import _TABLE_NAME_RE, _json, _require_client, _validate_cmdb_table, _validate_sys_id, _validation_error
 
 logger = logging.getLogger(__name__)
 
@@ -163,31 +163,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if err := _validate_sys_id(sys_id):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid 32-character hex sys_id of the CI to update.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid 32-character hex sys_id of the CI to update.")
 
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
 
         if err := _validate_fields(fields):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Check field names and values.",
-                "retry": False,
-            })
+            return _validation_error(err, "Check field names and values.")
 
         try:
             # Fetch current record to build diff
@@ -280,13 +262,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if not token or not token.strip():
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Confirmation token must not be empty.",
-                "suggestion": "Call preview_ci_update first to get a token.",
-                "retry": False,
-            })
+            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_update first to get a token.")
 
         # Check completed operations cache for idempotent retry
         if token in _completed_ops:
@@ -299,33 +275,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         op = pending.get(token)
         if op is None:
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Invalid or expired confirmation token.",
-                "suggestion": "Call preview_ci_update again to get a new token.",
-                "retry": False,
-            })
+            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_update again to get a new token.")
 
         if op.is_expired():
             del pending[token]
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Confirmation token has expired.",
-                "suggestion": "Call preview_ci_update again to get a new token.",
-                "retry": False,
-            })
+            return _validation_error("Confirmation token has expired.", "Call preview_ci_update again to get a new token.")
 
         if op.operation != "update":
             # Don't consume — the token belongs to a different confirm handler.
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Token is for a '{op.operation}' operation, not 'update'.",
-                "suggestion": "Use confirm_ci_create for create tokens.",
-                "retry": False,
-            })
+            return _validation_error(f"Token is for a '{op.operation}' operation, not 'update'.", "Use confirm_ci_create for create tokens.")
 
         logger.info(
             "AUDIT confirm_ci_update: user=%s table=%s sys_id=%s fields=%s",
@@ -418,31 +376,13 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if err := _validate_cmdb_table(table):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
 
         if err := _validate_fields(fields):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Check field names and values.",
-                "retry": False,
-            })
+            return _validation_error(err, "Check field names and values.")
 
         if "name" not in fields:
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Field 'name' is required for CI creation.",
-                "suggestion": "Include a 'name' field in the fields dict.",
-                "retry": False,
-            })
+            return _validation_error("Field 'name' is required for CI creation.", "Include a 'name' field in the fields dict.")
 
         # Generate token and store pending operation
         token = _generate_token()
@@ -494,13 +434,7 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
         _cleanup_expired()
 
         if not token or not token.strip():
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Confirmation token must not be empty.",
-                "suggestion": "Call preview_ci_create first to get a token.",
-                "retry": False,
-            })
+            return _validation_error("Confirmation token must not be empty.", "Call preview_ci_create first to get a token.")
 
         # Check completed operations cache for idempotent retry
         if token in _completed_ops:
@@ -513,33 +447,15 @@ def register_mutation_tools(mcp: FastMCP, client: ServiceNowClient | None) -> No
 
         op = pending.get(token)
         if op is None:
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Invalid or expired confirmation token.",
-                "suggestion": "Call preview_ci_create again to get a new token.",
-                "retry": False,
-            })
+            return _validation_error("Invalid or expired confirmation token.", "Call preview_ci_create again to get a new token.")
 
         if op.is_expired():
             del pending[token]
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": "Confirmation token has expired.",
-                "suggestion": "Call preview_ci_create again to get a new token.",
-                "retry": False,
-            })
+            return _validation_error("Confirmation token has expired.", "Call preview_ci_create again to get a new token.")
 
         if op.operation != "create":
             # Don't consume — the token belongs to a different confirm handler.
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Token is for a '{op.operation}' operation, not 'create'.",
-                "suggestion": "Use confirm_ci_update for update tokens.",
-                "retry": False,
-            })
+            return _validation_error(f"Token is for a '{op.operation}' operation, not 'create'.", "Use confirm_ci_update for update tokens.")
 
         logger.info(
             "AUDIT confirm_ci_create: user=%s table=%s fields=%s",

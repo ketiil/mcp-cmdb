@@ -138,3 +138,51 @@ def _validate_sys_id(sys_id: str) -> str | None:
     if not all(c.isalnum() for c in sys_id):
         return f"Invalid sys_id format: '{sys_id}'. Must contain only alphanumeric characters."
     return None
+
+
+def _validation_error(message: str, suggestion: str = "", suggested_next: str = "") -> str:
+    """Return a serialized ValidationError JSON response.
+
+    Use at validation guard clauses in tool handlers:
+        if err := _validate_cmdb_table(table):
+            return _validation_error(err, "Provide a valid CMDB table name.")
+    """
+    result: dict[str, Any] = {
+        "error": True,
+        "category": "ValidationError",
+        "message": message,
+        "suggestion": suggestion,
+        "retry": False,
+    }
+    if suggested_next:
+        result["suggested_next"] = suggested_next
+    return _json(result)
+
+
+def _not_found_error(message: str, suggestion: str = "", suggested_next: str = "") -> str:
+    """Return a serialized NotFoundError JSON response."""
+    result: dict[str, Any] = {
+        "error": True,
+        "category": "NotFoundError",
+        "message": message,
+        "suggestion": suggestion or "Verify the sys_id and table name.",
+        "retry": False,
+    }
+    if suggested_next:
+        result["suggested_next"] = suggested_next
+    return _json(result)
+
+
+def _pagination_metadata(
+    total: int | None, offset: int, page_len: int, limit: int
+) -> dict[str, Any]:
+    """Build standard pagination metadata for tool responses.
+
+    Returns dict with total_count, has_more, and next_offset.
+    Merge into the result dict: result.update(_pagination_metadata(...))
+    """
+    return {
+        "total_count": total,
+        "has_more": _has_more(total, offset, page_len, limit),
+        "next_offset": offset + page_len,
+    }

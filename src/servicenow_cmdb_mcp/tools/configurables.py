@@ -15,11 +15,12 @@ from servicenow_cmdb_mcp.redaction import redact_credentials
 from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
-    _has_more,
     _json,
+    _pagination_metadata,
     _require_client,
     _safe_total,
     _validate_table_name,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,11 +77,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts = [f"collection={table}"]
@@ -136,9 +133,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 "business_rules": rules,
                 "suggested_next": f"Use get_client_scripts(table='{table}') for UI-side scripts, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full summary.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(rules), limit)
-            result["next_offset"] = offset + len(rules)
+            result.update(_pagination_metadata(total, offset, len(rules), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -182,11 +177,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts = [f"table={table}"]
@@ -229,9 +220,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 "client_scripts": scripts,
                 "suggested_next": f"Use get_business_rules(table='{table}') for server-side scripts, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full summary.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(scripts), limit)
-            result["next_offset"] = offset + len(scripts)
+            result.update(_pagination_metadata(total, offset, len(scripts), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -278,11 +267,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts = [f"internal_nameCONTAINS{table}"]
@@ -323,9 +308,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 "flows": flows,
                 "suggested_next": f"Use get_business_rules(table='{table}') for server-side logic, get_acls(table='{table}') for access controls, or analyze_configurables(table='{table}') for a full overview.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(flows), limit)
-            result["next_offset"] = offset + len(flows)
+            result.update(_pagination_metadata(total, offset, len(flows), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -370,11 +353,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid table name.")
 
         try:
             query_parts = [f"nameSTARTSWITH{table}"]
@@ -419,9 +398,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 "acls": acls,
                 "suggested_next": f"Use get_business_rules(table='{table}') for server-side scripts, get_client_scripts(table='{table}') for UI scripts, or analyze_configurables(table='{table}') for a full summary.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(acls), limit)
-            result["next_offset"] = offset + len(acls)
+            result.update(_pagination_metadata(total, offset, len(acls), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -458,11 +435,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             return err
 
         if err := _validate_table_name(table):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err, "suggestion": "Provide a valid table name.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid table name.")
 
         def _count(agg: dict[str, Any]) -> int:
             result = agg.get("result", agg)

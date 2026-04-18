@@ -17,11 +17,13 @@ from servicenow_cmdb_mcp.tools._utils import (
     _clamp_limit,
     _clamp_offset,
     _extract_agg_count,
-    _has_more,
     _json,
     _nav_url,
+    _not_found_error,
+    _pagination_metadata,
     _require_client,
     _validate_sys_id,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,22 +276,13 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         offset = _clamp_offset(offset)
 
         if err := _validate_sys_id(ci_sys_id):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CI sys_id.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CI sys_id.")
 
         if direction not in ("upstream", "downstream", "both"):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Invalid direction '{direction}'. Must be 'upstream', 'downstream', or 'both'.",
-                "suggestion": "Use 'upstream' for dependencies, 'downstream' for dependents, or 'both'.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid direction '{direction}'. Must be 'upstream', 'downstream', or 'both'.",
+                "Use 'upstream' for dependencies, 'downstream' for dependents, or 'both'.",
+            )
 
         try:
             relationships, total = await asyncio.gather(
@@ -305,9 +298,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 "relationships": relationships,
                 "suggested_next": "Use get_dependency_tree(sys_id) for full dependency chain, or get_impact_summary(sys_id) for service impact.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(relationships), limit)
-            result["next_offset"] = offset + len(relationships)
+            result.update(_pagination_metadata(total, offset, len(relationships), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -370,22 +361,13 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CI sys_id.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CI sys_id.")
 
         if direction not in ("upstream", "downstream"):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Invalid direction '{direction}'. Must be 'upstream' or 'downstream'.",
-                "suggestion": "Use 'upstream' to see what this CI depends on, 'downstream' to see what depends on it.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid direction '{direction}'. Must be 'upstream' or 'downstream'.",
+                "Use 'upstream' to see what this CI depends on, 'downstream' to see what depends on it.",
+            )
 
         max_depth = max(1, min(max_depth, 5))
         filter_set = set(class_filter) if class_filter else set()
@@ -601,22 +583,13 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         offset = _clamp_offset(offset)
 
         if err := _validate_sys_id(ci_sys_id):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CI sys_id.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CI sys_id.")
 
         if direction not in ("upstream", "downstream", "both"):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Invalid direction '{direction}'.",
-                "suggestion": "Use 'upstream', 'downstream', or 'both'.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid direction '{direction}'.",
+                "Use 'upstream', 'downstream', or 'both'.",
+            )
 
         try:
             # Resolve rel_type name to sys_id if it doesn't look like a sys_id
@@ -624,13 +597,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
             if len(rel_type) != 32 or not rel_type.isalnum():
                 # Sanitize: reject encoded query operators and excessive length
                 if "^" in rel_type or len(rel_type) > 200:
-                    return _json({
-                        "error": True,
-                        "category": "ValidationError",
-                        "message": "Relationship type name contains invalid characters.",
-                        "suggestion": "Use list_relationship_types to see available type names.",
-                        "retry": False,
-                    })
+                    return _validation_error(
+                        "Relationship type name contains invalid characters.",
+                        "Use list_relationship_types to see available type names.",
+                    )
                 # Looks like a name — resolve it
                 type_records = await client.get_records(
                     table="cmdb_rel_type",
@@ -639,13 +609,10 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                     limit=1,
                 )
                 if not type_records:
-                    return _json({
-                        "error": True,
-                        "category": "NotFoundError",
-                        "message": f"Relationship type '{rel_type}' not found.",
-                        "suggestion": "Use list_relationship_types to see available types.",
-                        "retry": False,
-                    })
+                    return _not_found_error(
+                        f"Relationship type '{rel_type}' not found.",
+                        "Use list_relationship_types to see available types.",
+                    )
                 rel_type_sys_id = type_records[0].get("sys_id", "")
 
             relationships, total = await asyncio.gather(
@@ -664,9 +631,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                 "relationships": relationships,
                 "suggested_next": "Use get_ci_details(sys_id) to inspect a related CI, or get_dependency_tree(sys_id) for the full chain.",
             }
-            result["total_count"] = total
-            result["has_more"] = _has_more(total, offset, len(relationships), limit)
-            result["next_offset"] = offset + len(relationships)
+            result.update(_pagination_metadata(total, offset, len(relationships), limit))
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()
@@ -721,13 +686,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
         assert client is not None
 
         if err := _validate_sys_id(ci_sys_id):
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CI sys_id.",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CI sys_id.")
 
         max_depth = max(1, min(max_depth, 5))
         filter_set = set(class_filter) if class_filter else set()
@@ -857,13 +816,7 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
 
         for label, sid in [("source_sys_id", source_sys_id), ("target_sys_id", target_sys_id)]:
             if err := _validate_sys_id(sid):
-                return _json({
-                    "error": True,
-                    "category": "ValidationError",
-                    "message": f"Invalid {label}: {err}",
-                    "suggestion": "Provide a valid CI sys_id.",
-                    "retry": False,
-                })
+                return _validation_error(f"Invalid {label}: {err}", "Provide a valid CI sys_id.")
 
         max_depth = max(1, min(max_depth, 10))
 

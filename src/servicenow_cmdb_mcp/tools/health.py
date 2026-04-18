@@ -20,6 +20,7 @@ from servicenow_cmdb_mcp.tools._utils import (
     _nav_url,
     _require_client,
     _validate_cmdb_table,
+    _validation_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         limit = _clamp_limit(limit)
         scan_offset = _clamp_offset(scan_offset)
 
@@ -259,12 +255,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
@@ -272,13 +263,10 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         # Keep in sync with the Literal type annotation on the match_field parameter above.
         allowed_fields = {"name", "serial_number", "asset_tag", "ip_address", "mac_address", "fqdn"}
         if match_field not in allowed_fields:
-            return _json({
-                "error": True,
-                "category": "ValidationError",
-                "message": f"Invalid match_field '{match_field}'.",
-                "suggestion": f"Use one of: {', '.join(sorted(allowed_fields))}.",
-                "retry": False,
-            })
+            return _validation_error(
+                f"Invalid match_field '{match_field}'.",
+                f"Use one of: {', '.join(sorted(allowed_fields))}.",
+            )
 
         try:
             # Use Aggregate API to find field values that appear more than once
@@ -393,12 +381,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
         days = max(1, min(days, 3650))
@@ -475,12 +458,7 @@ def register_health_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
         if err := _require_client(client):
             return err
         if err := _validate_cmdb_table(ci_class):
-            return _json({
-                "error": True, "category": "ValidationError",
-                "message": err,
-                "suggestion": "Provide a valid CMDB table name (e.g. cmdb_ci_server).",
-                "retry": False,
-            })
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
         stale_days = max(1, min(stale_days, 3650))
 
         try:
