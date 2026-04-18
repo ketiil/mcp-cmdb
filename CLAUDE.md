@@ -25,7 +25,7 @@ src/servicenow_cmdb_mcp/
 │   ├── relationships.py # get_ci_relationships, get_dependency_tree, get_impact_summary, list_relationship_types, find_related_cis
 │   ├── health.py        # find_orphan_cis, find_duplicate_cis, find_stale_cis, cmdb_health_summary
 │   ├── mutations.py     # preview_ci_update/create → confirm_ci_update/create (two-phase)
-│   ├── configurables.py # get_business_rules, get_flows, get_client_scripts, get_acls, analyze_configurables
+│   ├── configurables.py # get_business_rules, get_flows, get_client_scripts, get_acls, get_script_includes, analyze_configurables
 │   ├── discovery.py     # list_discovery_schedules, get_discovery_status, get_discovery_errors
 │   ├── ire.py           # get_identification_rules, get_reconciliation_rules, explain_duplicate
 │   └── imports.py       # list_data_sources, get_import_set_runs, get_transform_errors

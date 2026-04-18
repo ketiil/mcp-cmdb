@@ -410,14 +410,112 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             idempotentHint=True,
         ),
     )
+    async def get_script_includes(
+        name_filter: str = "",
+        active_only: bool = True,
+        include_scripts: bool = False,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> str:
+        """Get script includes matching a name filter.
+
+        Script includes are reusable server-side JavaScript classes and functions.
+        Unlike business rules, they are not tied to a specific table — they are
+        global utilities callable from any server-side script.
+
+        Use this to find utility classes referenced by business rules, flows, or
+        other scripts (e.g., searching for "CMDB" to find CMDB-related utilities).
+
+        Examples:
+            get_script_includes(name_filter="CMDB")
+            get_script_includes(name_filter="DNB_CMDB", include_scripts=True)
+            get_script_includes(name_filter="Util", active_only=False, limit=50)
+
+        Args:
+            name_filter: Filter script includes whose name contains this value
+                        (case-insensitive LIKE match). When empty, returns all
+                        script includes up to the limit.
+            active_only: If True, return only active script includes. Defaults to True.
+            include_scripts: If True, include full (redacted) script bodies. Defaults to
+                           False for token efficiency — set True when you need to review logic.
+            limit: Maximum script includes to return (1-1000, default 25).
+            offset: Pagination offset.
+
+        Returns:
+            JSON object with "count", "total_count", "has_more", "next_offset",
+            and "script_includes" list containing name, api_name, description,
+            active, client_callable, access, and optionally the redacted script body.
+        """
+        logger.info("get_script_includes: name_filter=%s", name_filter)
+        if err := _require_client(client):
+            return err
+        limit = _clamp_limit(limit)
+        offset = _clamp_offset(offset)
+
+        try:
+            query_parts: list[str] = []
+            if name_filter:
+                query_parts.append(f"nameLIKE{name_filter}")
+            if active_only:
+                query_parts.append("active=true")
+            query = "^".join(query_parts) if query_parts else ""
+
+            records, total = await asyncio.gather(
+                client.get_records(
+                    table="sys_script_include",
+                    query=query,
+                    fields=[
+                        "sys_id", "name", "api_name", "active",
+                        "client_callable", "access", "description", "script",
+                    ],
+                    limit=limit,
+                    offset=offset,
+                    order_by="ORDERBYname",
+                ),
+                _safe_total(client, "sys_script_include", query),
+            )
+
+            includes = []
+            for r in records:
+                item: dict[str, Any] = {
+                    "sys_id": r.get("sys_id", ""),
+                    "name": r.get("name", ""),
+                    "api_name": r.get("api_name", ""),
+                    "active": r.get("active", ""),
+                    "client_callable": r.get("client_callable", ""),
+                    "access": r.get("access", ""),
+                    "description": r.get("description", ""),
+                }
+                if include_scripts:
+                    redacted = _redact_script_fields(r, ["script"])
+                    item["script"] = redacted.get("script", "")
+                includes.append(item)
+
+            result: dict[str, Any] = {
+                "count": len(includes),
+                "script_includes": includes,
+                "suggested_next": "Use get_business_rules(table) to see business rules, or get_client_scripts(table) for UI-side scripts.",
+            }
+            result.update(_pagination_metadata(total, offset, len(includes), limit))
+            return _json(result)
+        except ServiceNowError as e:
+            return e.to_json()
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+        ),
+    )
     async def analyze_configurables(
         table: str,
     ) -> str:
         """Produce a summary of all configurables for a CMDB table.
 
-        Counts business rules, client scripts, flows, and ACLs for the given
-        table in a single overview. Uses the Aggregate API for efficient counting
-        where possible, falling back to limited record fetches.
+        Counts business rules, client scripts, flows, ACLs, and script includes
+        for the given table in a single overview. Uses the Aggregate API for
+        efficient counting where possible, falling back to limited record fetches.
 
         Use this for a quick audit of what automation and access controls exist
         on a table before making changes.
@@ -427,8 +525,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
 
         Returns:
             JSON object with "table" and counts for each configurable type:
-            "business_rules", "client_scripts", "flows", "acls", each with
-            "active_count" and "total_count".
+            "business_rules", "client_scripts", "flows", "acls", "script_includes",
+            each with "active_count" and "total_count".
         """
         logger.info("analyze_configurables: table=%s", table)
         if err := _require_client(client):
@@ -466,6 +564,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             _safe_aggregate("sys_hub_flow", f"internal_nameCONTAINS{table}^active=true"),
             _safe_aggregate("sys_security_acl", f"nameSTARTSWITH{table}"),
             _safe_aggregate("sys_security_acl", f"nameSTARTSWITH{table}^active=true"),
+            _safe_aggregate("sys_script_include", f"nameLIKE{table}"),
+            _safe_aggregate("sys_script_include", f"nameLIKE{table}^active=true"),
         )
 
         def _category(total: dict, active: dict) -> dict[str, Any]:
@@ -485,5 +585,6 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             "client_scripts": _category(results[2], results[3]),
             "flows": _category(results[4], results[5]),
             "acls": _category(results[6], results[7]),
-            "suggested_next": f"Use get_business_rules(table='{table}'), get_client_scripts(table='{table}'), get_acls(table='{table}'), or get_flows(table='{table}') for details.",
+            "script_includes": _category(results[8], results[9]),
+            "suggested_next": f"Use get_business_rules(table='{table}'), get_client_scripts(table='{table}'), get_acls(table='{table}'), get_flows(table='{table}'), or get_script_includes(name_filter='{table}') for details.",
         })

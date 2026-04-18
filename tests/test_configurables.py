@@ -397,6 +397,64 @@ class TestGetAcls:
         assert result["error"] is True
 
 
+# ── get_script_includes ─────────────────────────────────────────────
+
+
+class TestGetScriptIncludes:
+    @pytest.mark.asyncio
+    async def test_returns_empty(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        result = _parse(await tools["get_script_includes"]())
+        assert result["count"] == 0
+        assert result["script_includes"] == []
+
+    @pytest.mark.asyncio
+    async def test_returns_includes(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            {
+                "sys_id": "si1",
+                "name": "CMDBUtil",
+                "api_name": "global.CMDBUtil",
+                "active": "true",
+                "client_callable": "false",
+                "access": "public",
+                "description": "CMDB utility functions",
+                "script": "var CMDBUtil = Class.create();",
+            }
+        ]
+        result = _parse(await tools["get_script_includes"](name_filter="CMDB", include_scripts=True))
+        assert result["count"] == 1
+        assert result["script_includes"][0]["name"] == "CMDBUtil"
+        assert result["script_includes"][0]["api_name"] == "global.CMDBUtil"
+        assert "script" in result["script_includes"][0]
+
+    @pytest.mark.asyncio
+    async def test_scripts_excluded_by_default(self, mock_client, tools):
+        mock_client.get_records.return_value = [
+            {
+                "sys_id": "si1", "name": "CMDBUtil", "api_name": "global.CMDBUtil",
+                "active": "true", "client_callable": "false", "access": "public",
+                "description": "test", "script": "var x = 1;",
+            }
+        ]
+        result = _parse(await tools["get_script_includes"](name_filter="CMDB"))
+        assert "script" not in result["script_includes"][0]
+
+    @pytest.mark.asyncio
+    async def test_name_filter_in_query(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        await tools["get_script_includes"](name_filter="DNB_CMDB")
+        call = mock_client.get_records.call_args
+        assert "nameLIKEDNB_CMDB" in call.kwargs["query"]
+
+    @pytest.mark.asyncio
+    async def test_active_only_filter(self, mock_client, tools):
+        mock_client.get_records.return_value = []
+        await tools["get_script_includes"](active_only=True)
+        call = mock_client.get_records.call_args
+        assert "active=true" in call.kwargs["query"]
+
+
 # ── analyze_configurables ──────────────────────────────────────────
 
 
@@ -411,6 +469,7 @@ class TestAnalyzeConfigurables:
         assert result["client_scripts"]["total_count"] == 5
         assert result["flows"]["total_count"] == 5
         assert result["acls"]["total_count"] == 5
+        assert result["script_includes"]["total_count"] == 5
 
     @pytest.mark.asyncio
     async def test_zero_counts(self, mock_client, tools):
@@ -469,7 +528,7 @@ class TestAnalyzeConfigurables:
     async def test_aggregate_calls_correct_queries(self, mock_client, tools):
         await tools["analyze_configurables"](table="cmdb_ci_server")
         calls = mock_client.get_aggregate.call_args_list
-        assert len(calls) == 8  # 4 types x 2 (total + active)
+        assert len(calls) == 10  # 5 types x 2 (total + active)
 
         queries = [c.kwargs["query"] for c in calls]
         assert "collection=cmdb_ci_server" in queries
@@ -480,6 +539,8 @@ class TestAnalyzeConfigurables:
         assert "internal_nameCONTAINScmdb_ci_server^active=true" in queries
         assert "nameSTARTSWITHcmdb_ci_server" in queries
         assert "nameSTARTSWITHcmdb_ci_server^active=true" in queries
+        assert "nameLIKEcmdb_ci_server" in queries
+        assert "nameLIKEcmdb_ci_server^active=true" in queries
 
     @pytest.mark.asyncio
     async def test_malformed_aggregate_response(self, mock_client, tools):
@@ -495,7 +556,7 @@ class TestAnalyzeConfigurables:
         mock_client.get_aggregate.side_effect = RateLimitError("Rate limited", retry_after=5)
         result = _parse(await tools["analyze_configurables"](table="cmdb_ci"))
         # All categories should have structured error with category and retry
-        for category in ("business_rules", "client_scripts", "flows", "acls"):
+        for category in ("business_rules", "client_scripts", "flows", "acls", "script_includes"):
             assert result[category]["total_count"] is None
             assert result[category]["error"] == "RateLimitError"
             assert result[category]["retry"] is True
@@ -506,6 +567,6 @@ class TestAnalyzeConfigurables:
         from servicenow_cmdb_mcp.errors import SNPermissionError
         mock_client.get_aggregate.side_effect = SNPermissionError("Denied")
         result = _parse(await tools["analyze_configurables"](table="cmdb_ci"))
-        for category in ("business_rules", "client_scripts", "flows", "acls"):
+        for category in ("business_rules", "client_scripts", "flows", "acls", "script_includes"):
             assert result[category]["error"] == "PermissionError"
             assert result[category]["retry"] is False
