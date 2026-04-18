@@ -71,7 +71,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
 
         if table:
             if err := _validate_table_name(table):
-                return _validation_error(err, "Provide a valid table name.")
+                return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts: list[str] = []
@@ -159,7 +159,7 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
 
         if table:
             if err := _validate_table_name(table):
-                return _validation_error(err, "Provide a valid table name.")
+                return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts: list[str] = []
@@ -246,19 +246,20 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
             return err
 
         if err := _validate_sys_id(sys_id_a):
-            return _validation_error(f"sys_id_a: {err}", "Provide the sys_id of the first CI.")
+            return _validation_error(f"sys_id_a: {err}", "Provide the sys_id of the first CI.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if err := _validate_sys_id(sys_id_b):
-            return _validation_error(f"sys_id_b: {err}", "Provide the sys_id of the second CI.")
+            return _validation_error(f"sys_id_b: {err}", "Provide the sys_id of the second CI.", "Use search_cis(name_filter='...') to find the correct sys_id.")
 
         if sys_id_a == sys_id_b:
             return _validation_error(
                 "sys_id_a and sys_id_b are the same. Provide two different CIs to compare.",
                 "Use two distinct sys_ids.",
+                "Use find_duplicate_cis() to discover duplicate pairs to compare.",
             )
 
         if err := _validate_cmdb_table(table):
-            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).")
+            return _validation_error(err, "Provide a valid CMDB table name (e.g. cmdb_ci_server).", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             # First fetch identification rules to know which fields to compare
@@ -303,12 +304,14 @@ def register_ire_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
                 return _not_found_error(
                     f"CI A not found: sys_id '{sys_id_a}' in table '{table}'.",
                     "Verify the sys_id and table.",
+                    "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
                 )
 
             if not ci_b:
                 return _not_found_error(
                     f"CI B not found: sys_id '{sys_id_b}' in table '{table}'.",
                     "Verify the sys_id and table.",
+                    "Use search_cis to verify the CI exists, or try table='cmdb_ci' for the broadest search.",
                 )
 
             comparison: list[dict[str, Any]] = []

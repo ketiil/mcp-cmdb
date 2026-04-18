@@ -151,6 +151,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 return _validation_error(
                     "Filter values must not contain query operators.",
                     "Remove '^' characters from filter values.",
+                    "Use list_discovery_schedules() to browse valid schedule names.",
                 )
 
         if state and state not in VALID_DISCOVERY_STATES:
@@ -158,6 +159,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 f"Invalid state '{state}'. "
                 f"Valid values: {', '.join(sorted(VALID_DISCOVERY_STATES))}.",
                 "Use one of the valid discovery state values.",
+                "Valid states: Starting, Active, Completed, Cancelled, Error.",
             )
 
         try:
@@ -255,6 +257,7 @@ def register_discovery_tools(mcp: FastMCP, client: ServiceNowClient | None) -> N
                 f"Invalid severity '{severity}'. "
                 f"Valid values: {', '.join(sorted(VALID_SEVERITIES))}.",
                 "Use 'Error', 'Warning', or 'Info'.",
+                "Valid severity levels: Error, Warning, Info.",
             )
 
         try:

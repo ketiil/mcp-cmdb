@@ -12,12 +12,13 @@ class ServiceNowError(Exception):
     and provides to_json() for structured tool error responses.
     """
 
-    def __init__(self, category: str, message: str, suggestion: str, retry: bool) -> None:
+    def __init__(self, category: str, message: str, suggestion: str, retry: bool, suggested_next: str = "") -> None:
         super().__init__(message)
         self.category = category
         self.message = message
         self.suggestion = suggestion
         self.retry = retry
+        self.suggested_next = suggested_next
         self.retry_after_seconds: int | None = None
 
     def to_json(self) -> str:
@@ -31,6 +32,8 @@ class ServiceNowError(Exception):
         }
         if self.retry_after_seconds is not None:
             data["retry_after_seconds"] = self.retry_after_seconds
+        if self.suggested_next:
+            data["suggested_next"] = self.suggested_next
         return json.dumps(data, indent=2)
 
 

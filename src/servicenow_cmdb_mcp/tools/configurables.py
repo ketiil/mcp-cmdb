@@ -77,7 +77,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.")
+            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts = [f"collection={table}"]
@@ -177,7 +177,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.")
+            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts = [f"table={table}"]
@@ -267,7 +267,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.")
+            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts = [f"internal_nameCONTAINS{table}"]
@@ -353,7 +353,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         offset = _clamp_offset(offset)
 
         if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.")
+            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts = [f"nameSTARTSWITH{table}"]
@@ -435,7 +435,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             return err
 
         if err := _validate_table_name(table):
-            return _validation_error(err, "Provide a valid table name.")
+            return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         def _count(agg: dict[str, Any]) -> int:
             result = agg.get("result", agg)

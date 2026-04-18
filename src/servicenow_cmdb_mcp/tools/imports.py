@@ -66,7 +66,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if target_table:
             if err := _validate_table_name(target_table):
-                return _validation_error(err, "Provide a valid table name.")
+                return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts: list[str] = []
@@ -157,13 +157,14 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if table_name:
             if err := _validate_table_name(table_name):
-                return _validation_error(err, "Provide a valid table name.")
+                return _validation_error(err, "Provide a valid table name.", "Use list_data_sources() to browse available import set table names.")
 
         # Validate state doesn't contain query operators
         if state and "^" in state:
             return _validation_error(
                 "state must not contain query operators.",
                 "Remove '^' characters from filter values.",
+                "Common states: Loaded, Processed, Complete, Error, Cancelled.",
             )
 
         try:
@@ -260,7 +261,7 @@ def register_import_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None
 
         if target_table:
             if err := _validate_table_name(target_table):
-                return _validation_error(err, "Provide a valid table name.")
+                return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
         try:
             query_parts = [
