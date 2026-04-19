@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import gzip
 import json
 import logging
 from typing import Any
@@ -36,6 +38,17 @@ def _redact_script_fields(record: dict[str, Any], script_fields: list[str]) -> d
         if field in redacted and isinstance(redacted[field], str) and redacted[field]:
             redacted[field] = redact_credentials(redacted[field])
     return redacted
+
+
+def _decode_flow_values(encoded: str) -> dict[str, Any]:
+    """Decode a base64+gzip encoded values field from sys_hub_flow_logic_instance_v2."""
+    if not encoded:
+        return {}
+    try:
+        decoded = gzip.decompress(base64.b64decode(encoded))
+        return json.loads(decoded)
+    except Exception:
+        return {"error": "Could not decode values"}
 
 
 def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -> None:
@@ -349,6 +362,7 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
     )
     async def get_flow_details(
         sys_id: str,
+        include_step_details: bool = False,
     ) -> str:
         """Get detailed logic of a Flow Designer flow by sys_id.
 
@@ -360,9 +374,14 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
 
         Examples:
             get_flow_details(sys_id="abc123...")
+            get_flow_details(sys_id="abc123...", include_step_details=True)
 
         Args:
             sys_id: The sys_id of the flow (from get_flows results).
+            include_step_details: If True, fetches and decodes step-level configuration
+                                 from sys_hub_flow_logic_instance_v2 and sys_hub_step_instance.
+                                 Shows actual inputs, outputs, and conditions for each step.
+                                 Requires fd_read role. Defaults to False for efficiency.
 
         Returns:
             JSON object with flow metadata (name, description, status, run_as)
@@ -419,6 +438,81 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 except (json.JSONDecodeError, TypeError):
                     steps = [{"error": "Could not parse label_cache"}]
 
+            # Fetch detailed step configuration if requested
+            detailed_steps: list[dict[str, Any]] | None = None
+            if include_step_details:
+                logic_records, step_records_raw = await asyncio.gather(
+                    client.get_records(
+                        table="sys_hub_flow_logic_instance_v2",
+                        query=f"flow={sys_id}^ORDERBYorder",
+                        fields=[
+                            "sys_id", "ui_id", "order", "values",
+                            "parent_ui_id", "connected_to",
+                        ],
+                        limit=200,
+                    ),
+                    client.get_records(
+                        table="sys_hub_step_instance",
+                        query=f"flow={sys_id}",  # may return 0 if no direct flow field
+                        fields=[
+                            "sys_id", "cid", "label", "action",
+                            "order", "error_handling_type",
+                        ],
+                        limit=200,
+                    ),
+                )
+
+                # If step query by flow returned nothing, try batch by ui_id/cid
+                if not step_records_raw and logic_records:
+                    ui_ids = [r.get("ui_id", "") for r in logic_records if r.get("ui_id")]
+                    if ui_ids:
+                        step_records_raw = await client.get_records(
+                            table="sys_hub_step_instance",
+                            query=f"cidIN{','.join(ui_ids)}",
+                            fields=[
+                                "sys_id", "cid", "label", "action",
+                                "order", "error_handling_type",
+                            ],
+                            limit=200,
+                        )
+
+                step_map = {s.get("cid", ""): s for s in step_records_raw}
+
+                detailed_steps = []
+                for logic in logic_records:
+                    ui_id = logic.get("ui_id", "")
+                    step_meta = step_map.get(ui_id, {})
+                    decoded_values = _decode_flow_values(logic.get("values", ""))
+
+                    step_detail: dict[str, Any] = {
+                        "order": logic.get("order", ""),
+                        "label": step_meta.get("label", ""),
+                        "error_handling": step_meta.get("error_handling_type", ""),
+                        "parent_ui_id": logic.get("parent_ui_id", ""),
+                    }
+
+                    inputs = decoded_values.get("inputs", [])
+                    if inputs:
+                        step_detail["inputs"] = [
+                            {
+                                "name": inp.get("name", ""),
+                                "value": inp.get("value", ""),
+                                "type": inp.get("parameter", {}).get("type", ""),
+                                "label": inp.get("parameter", {}).get("label", ""),
+                            }
+                            for inp in inputs
+                        ]
+
+                    outputs = decoded_values.get("outputsToAssign", [])
+                    if outputs:
+                        step_detail["outputs"] = outputs
+
+                    variables = decoded_values.get("variables", [])
+                    if variables:
+                        step_detail["variables"] = variables
+
+                    detailed_steps.append(step_detail)
+
             result: dict[str, Any] = {
                 "sys_id": record.get("sys_id", ""),
                 "name": record.get("name", ""),
@@ -435,6 +529,9 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 "step_count": len(steps),
                 "suggested_next": "Use get_flows(name_filter='...') to find other flows, or get_business_rules(table) for server-side logic.",
             }
+            if detailed_steps is not None:
+                result["detailed_steps"] = detailed_steps
+                result["detailed_step_count"] = len(detailed_steps)
             return _json(result)
         except ServiceNowError as e:
             return e.to_json()

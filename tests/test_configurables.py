@@ -566,6 +566,96 @@ class TestGetFlowDetails:
         assert result["step_count"] == 0
         assert result["steps"] == []
 
+    @pytest.mark.asyncio
+    async def test_step_details_false_by_default(self, mock_client, tools):
+        """detailed_steps should not appear when include_step_details is False."""
+        mock_client.get_record.return_value = {
+            "sys_id": "a" * 32, "name": "Test Flow", "internal_name": "test",
+            "description": "", "active": "true", "status": "published",
+            "run_as": "system", "type": "flow", "label_cache": "",
+            "sys_scope": "", "sys_created_by": "admin", "sys_updated_on": "2026-01-01",
+        }
+        result = _parse(await tools["get_flow_details"]("a" * 32))
+        assert "detailed_steps" not in result
+
+    @pytest.mark.asyncio
+    async def test_include_step_details(self, mock_client, tools):
+        """include_step_details=True should fetch and decode step configuration."""
+        import base64, gzip
+
+        values_data = json.dumps({
+            "outputsToAssign": [],
+            "inputs": [
+                {
+                    "name": "record",
+                    "value": "{{trigger.current}}",
+                    "displayValue": "{{trigger.current}}",
+                    "children": [],
+                    "parameter": {
+                        "type": "reference",
+                        "label": "Record",
+                        "name": "record",
+                    },
+                    "scriptActive": False,
+                }
+            ],
+            "variables": [],
+        })
+        encoded_values = base64.b64encode(gzip.compress(values_data.encode())).decode()
+
+        mock_client.get_record.return_value = {
+            "sys_id": "a" * 32, "name": "Test Flow", "internal_name": "test",
+            "description": "", "active": "true", "status": "published",
+            "run_as": "system", "type": "flow", "label_cache": "[]",
+            "sys_scope": "", "sys_created_by": "admin", "sys_updated_on": "2026-01-01",
+        }
+
+        # get_records will be called for logic instances, then step instances
+        mock_client.get_records.side_effect = [
+            # logic instances
+            [{"sys_id": "logic1", "ui_id": "uid-1", "order": "1",
+              "values": encoded_values, "parent_ui_id": "", "connected_to": ""}],
+            # step instances (by flow - returns empty)
+            [],
+            # step instances (by cid batch)
+            [{"sys_id": "step1", "cid": "uid-1", "label": "Look Up Record",
+              "action": "", "order": "1", "error_handling_type": "1"}],
+        ]
+
+        result = _parse(await tools["get_flow_details"]("a" * 32, include_step_details=True))
+        assert "detailed_steps" in result
+        assert result["detailed_step_count"] == 1
+        step = result["detailed_steps"][0]
+        assert step["label"] == "Look Up Record"
+        assert step["order"] == "1"
+        assert len(step["inputs"]) == 1
+        assert step["inputs"][0]["name"] == "record"
+        assert step["inputs"][0]["value"] == "{{trigger.current}}"
+        assert step["inputs"][0]["type"] == "reference"
+
+    @pytest.mark.asyncio
+    async def test_include_step_details_empty_values(self, mock_client, tools):
+        """Steps with empty values should still appear with metadata."""
+        mock_client.get_record.return_value = {
+            "sys_id": "a" * 32, "name": "Test Flow", "internal_name": "test",
+            "description": "", "active": "true", "status": "published",
+            "run_as": "system", "type": "flow", "label_cache": "[]",
+            "sys_scope": "", "sys_created_by": "admin", "sys_updated_on": "2026-01-01",
+        }
+        mock_client.get_records.side_effect = [
+            [{"sys_id": "logic1", "ui_id": "uid-1", "order": "2",
+              "values": "", "parent_ui_id": "", "connected_to": ""}],
+            [],  # step by flow
+            [{"sys_id": "step1", "cid": "uid-1", "label": "If",
+              "action": "", "order": "2", "error_handling_type": ""}],
+        ]
+
+        result = _parse(await tools["get_flow_details"]("a" * 32, include_step_details=True))
+        assert result["detailed_step_count"] == 1
+        step = result["detailed_steps"][0]
+        assert step["label"] == "If"
+        assert "inputs" not in step  # empty values = no inputs key
+
 
 # ── analyze_configurables ──────────────────────────────────────────
 
