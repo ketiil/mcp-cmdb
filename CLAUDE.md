@@ -77,6 +77,7 @@ ServiceNow query conventions:
 - Paginate: `ORDERBYsys_created_on` + `sysparm_offset` + `sysparm_limit`.
 - Aggregate API (`/api/now/stats/{table}`) for counts, not record fetches.
 - Default limit 25, max 1000.
+- Batch `IN` queries to 100 sys_ids per request (see `_fetch_relationships` in `relationships.py`) to avoid URL-length limits.
 
 ## Tool Registration Pattern
 
@@ -187,6 +188,7 @@ ACLs:          sys_security_acl
 - `_validation_error(message, suggestion, suggested_next="")` — use instead of inline `_json({"error": True, "category": "ValidationError", ...})`.
 - `_not_found_error(message, suggestion, suggested_next="")` — same pattern for NotFoundError.
 - `_pagination_metadata(total, offset, page_len, limit)` — returns dict with `total_count`, `has_more`, `next_offset`. Use `result.update(...)`.
+- `_sanitize_name_filter(name_filter)` — returns a ValidationError JSON string if `^` is present, else None. Use at top of any tool that substitutes a user-provided name into an encoded query.
 - Sanitize `name_filter` params: block `^` to prevent encoded query injection.
 
 ## Server Instructions

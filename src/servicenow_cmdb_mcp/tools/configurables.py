@@ -23,6 +23,7 @@ from servicenow_cmdb_mcp.tools._utils import (
     _pagination_metadata,
     _require_client,
     _safe_total,
+    _sanitize_name_filter,
     _validate_sys_id,
     _validate_table_name,
     _validation_error,
@@ -277,8 +278,10 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             offset: Pagination offset.
 
         Returns:
-            JSON object with "count", and "flows" list containing
-            name, internal_name, description, active status, and run_as.
+            JSON object with "count", "total_count", "has_more", "next_offset",
+            "suggested_next", and "flows" list containing sys_id, name,
+            internal_name, description, active, and run_as. Also echoes "table"
+            and/or "name_filter" when those parameters were provided.
         """
         logger.info("get_flows: table=%s name_filter=%s", table, name_filter)
         if err := _require_client(client):
@@ -296,11 +299,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
             if err := _validate_table_name(table):
                 return _validation_error(err, "Provide a valid table name.", "Use suggest_table(description) to find the right table, or list_ci_classes() to browse.")
 
-        if name_filter and "^" in name_filter:
-            return _validation_error(
-                "name_filter must not contain encoded query operators ('^').",
-                "Provide a plain text search term without special characters.",
-            )
+        if err := _sanitize_name_filter(name_filter):
+            return err
 
         try:
             query_parts: list[str] = []
@@ -384,8 +384,13 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                                  Requires fd_read role. Defaults to False for efficiency.
 
         Returns:
-            JSON object with flow metadata (name, description, status, run_as)
-            and parsed steps showing the flow's trigger, actions, and data flow.
+            JSON object with flow metadata (sys_id, name, internal_name,
+            description, active, status, run_as, type, sys_scope,
+            sys_created_by, sys_updated_on), "steps" and "step_count" parsed
+            from label_cache, and "suggested_next" guidance. When
+            include_step_details=True, also includes "detailed_steps" (with
+            decoded inputs, outputs, conditions, variables per step) and
+            "detailed_step_count".
         """
         logger.info("get_flow_details: sys_id=%s", sys_id)
         if err := _require_client(client):
@@ -465,15 +470,22 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
                 # If step query by flow returned nothing, try batch by ui_id/cid
                 if not step_records_raw and logic_records:
                     ui_ids = [r.get("ui_id", "") for r in logic_records if r.get("ui_id")]
-                    if ui_ids:
-                        step_records_raw = await client.get_records(
-                            table="sys_hub_step_instance",
-                            query=f"cidIN{','.join(ui_ids)}",
-                            fields=[
-                                "sys_id", "cid", "label", "action",
-                                "order", "error_handling_type",
-                            ],
-                            limit=200,
+                    # Batch IN-queries to 100 to avoid URL-length limits on flows
+                    # with many logic records. Mirrors _fetch_relationships in
+                    # relationships.py.
+                    step_records_raw = []
+                    for i in range(0, len(ui_ids), 100):
+                        batch = ui_ids[i:i + 100]
+                        step_records_raw.extend(
+                            await client.get_records(
+                                table="sys_hub_step_instance",
+                                query=f"cidIN{','.join(batch)}",
+                                fields=[
+                                    "sys_id", "cid", "label", "action",
+                                    "order", "error_handling_type",
+                                ],
+                                limit=len(batch),
+                            )
                         )
 
                 step_map = {s.get("cid", ""): s for s in step_records_raw}
@@ -675,11 +687,8 @@ def register_configurable_tools(mcp: FastMCP, client: ServiceNowClient | None) -
         limit = _clamp_limit(limit)
         offset = _clamp_offset(offset)
 
-        if name_filter and "^" in name_filter:
-            return _validation_error(
-                "name_filter must not contain encoded query operators ('^').",
-                "Provide a plain text search term without special characters.",
-            )
+        if err := _sanitize_name_filter(name_filter):
+            return err
 
         try:
             query_parts: list[str] = []

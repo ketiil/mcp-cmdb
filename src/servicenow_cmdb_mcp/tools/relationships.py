@@ -359,8 +359,12 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                    without post-processing, but loses sys_id and status detail.
 
         Returns:
-            JSON tree structure with "ci" (root CI details), "depth", "direction", and
-            "children" (nested list of related CIs, each with their own "children").
+            When format="json" (default): JSON object with "ci" (root CI), "direction",
+            "max_depth", "nodes_visited", "tree" (nested children), and "suggested_next".
+            When format="ascii_tree": the "tree" field is replaced by "tree_text"
+            (pre-rendered ASCII string). Both shapes also include "class_filter"
+            when applied, "timed_out" on deadline hit, and "is_partial" +
+            "traversal_errors" if any nodes failed to resolve.
         """
         logger.info("get_dependency_tree: ci=%s direction=%s depth=%d", ci_sys_id, direction, max_depth)
         if err := _require_client(client):
@@ -824,9 +828,12 @@ def register_relationship_tools(mcp: FastMCP, client: ServiceNowClient | None, c
                       find longer paths but issue more API calls.
 
         Returns:
-            JSON object with "found" (bool), "path" (ordered list of nodes from
-            source to target, each with "ci" details and "relationship_type"),
-            and "hops" (number of relationships in the path).
+            JSON object with "found" (bool), "hops" (number of relationships in
+            the path), "path" (ordered list of nodes from source to target,
+            each with "ci" details and "relationship_type"), "nodes_visited"
+            (BFS cost indicator), and "suggested_next". When not found, also
+            includes "max_depth_searched". When the BFS deadline is hit, also
+            includes "timed_out": true and a "message".
         """
         logger.info("find_ci_path: source=%s target=%s depth=%d", source_sys_id, target_sys_id, max_depth)
         if err := _require_client(client):

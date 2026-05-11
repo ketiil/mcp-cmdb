@@ -194,3 +194,21 @@ def _pagination_metadata(
         "has_more": _has_more(total, offset, page_len, limit),
         "next_offset": offset + page_len,
     }
+
+
+def _sanitize_name_filter(name_filter: str) -> str | None:
+    """Reject encoded-query injection in free-text name filters.
+
+    Returns a serialized ValidationError JSON string if the filter contains
+    the '^' encoded-query separator, else None. Use at the top of any tool
+    that substitutes a user-provided name into a ServiceNow encoded query:
+
+        if err := _sanitize_name_filter(name_filter):
+            return err
+    """
+    if name_filter and "^" in name_filter:
+        return _validation_error(
+            "name_filter must not contain encoded query operators ('^').",
+            "Provide a plain text search term without special characters.",
+        )
+    return None

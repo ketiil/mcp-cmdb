@@ -210,6 +210,7 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
             search_cis(ci_class="cmdb_ci_linux_server", operational_status="1")
             search_cis(ci_class="cmdb_ci_win_server", name_filter="prod", display_value="true")
             search_cis(ci_class="cmdb_ci_server", location="New York", limit=50)
+            search_cis(ci_class="cmdb_ci_server", display_value="all")  # both sys_id and display name per reference field
 
         Typical workflow: suggest_table → search_cis → get_ci_details → get_ci_relationships
 
@@ -235,7 +236,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                           both the sys_id (for API calls) and the display name.
 
         Returns:
-            JSON object with "count" (number of results returned) and "records" (list of CI dicts).
+            JSON object with "count" (results on this page), "records" (list of
+            CI dicts), "total_count", "has_more", "next_offset", and
+            "suggested_next". When display_value="all", each reference field in
+            a record is returned as {"value": sys_id, "display_value": label}
+            instead of a plain sys_id string.
         """
         logger.info("search_cis: class=%s name=%s", ci_class, name_filter)
         if err := _require_client(client):
@@ -342,7 +347,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                           both the sys_id (for API calls) and the display name.
 
         Returns:
-            JSON object with "count" (number of results returned) and "records" (list of CI dicts).
+            JSON object with "count" (results on this page), "records" (list of
+            CI dicts), "total_count", "has_more", "next_offset", and
+            "suggested_next". When display_value="all", each reference field in
+            a record is returned as {"value": sys_id, "display_value": label}
+            instead of a plain sys_id string.
         """
         logger.info("query_cis_raw: table=%s query=%s", table, encoded_query)
         if err := _require_client(client):
@@ -437,7 +446,11 @@ def register_query_tools(mcp: FastMCP, client: ServiceNowClient | None, cache: M
                           both the sys_id (for API calls) and the display name.
 
         Returns:
-            JSON object with the CI record, or an error if not found.
+            JSON object with the CI record fields, plus a "url" field linking
+            to the ServiceNow record, or a NotFoundError if the sys_id does not
+            exist. When display_value="all", each reference field is returned
+            as {"value": sys_id, "display_value": label} instead of a plain
+            sys_id string.
         """
         logger.info("get_ci_details: sys_id=%s table=%s", sys_id, table)
         if err := _require_client(client):
